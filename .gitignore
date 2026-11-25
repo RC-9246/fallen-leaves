@@ -1,0 +1,7 @@
+/build/
+.DS_Store
+*.p12
+*.jks
+*.keystore
+*.password
+local.properties
