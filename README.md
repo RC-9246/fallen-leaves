@@ -10,14 +10,17 @@ Requires Android 8.0 or newer. Open **运存** to see the dashboard. You can rea
 
 | Control | What it does | Access |
 | --- | --- | --- |
-| Available RAM trend | Samples every two seconds while the memory page is visible. Shows up to two minutes of local readings, a graph and a text summary. Sampling gaps are visible. | No root |
+| Memory dashboard | Three independently collapsible groups remember their layout. RAM and swap show used, available, total and percentage. The cache section shows estimated file cache, reclaimable slab, their share of total RAM and memory pressure if exposed. RAM and swap change color at 70% and 90%. The blue cache indicator reflects size. | No root |
+| Available RAM trend | Samples every second while the memory page is visible. Shows up to two minutes of local readings, a graph and a text summary. Sampling gaps are visible. | No root |
 | Storage ranking | In **存储 → 应用占用排行**, grant Usage Access in Android settings to rank eligible user apps by cache size or total disk usage. Tap an entry to open system settings. Total includes cache once. Unavailable values are labeled. | No root, optional Usage Access |
-| Memory reclaim | Ask the Linux kernel to drop clean file pages, reclaimable filesystem objects such as dentries and inodes, or both. Shows before and after readings. | Root |
+| Memory reclaim | Save a combination of clean file pages and reclaimable filesystem objects for the main button. The single-action menu runs one area without changing the combination. A switch controls confirmation for file pages, including the tile. Operations that include kernel objects always show a pause warning. Results show before and after readings. | Root |
 | Quick Settings tile | Add **回收文件页** in the system tile editor. Tapping it requests file-page reclaim. | Root |
 | Background apps | Select an eligible cached user process and send a memory-trim request. The app rechecks its identity and cached state before sending. The recipient decides what to release. Android 14 and later may ignore the request. | Root |
-| Low-memory monitor | Opt in to a foreground service with a notification. Choose notification only (default) or automatic file-page reclaim. Both sample every 30 seconds and trigger after three consecutive readings below 5%, 8% or 10% available RAM. Grant notification access and enable the corresponding channels. Attempts are at least 30 minutes apart. Available RAM must recover to 3 percentage points above the threshold to rearm. Start it again after reboot if wanted. | No root for alerts, root for reclaim |
+| Automatic monitoring | Independently enable used RAM ≥ 1–99% (preset 90%) and an elapsed interval of 1–1440 minutes (preset 30). Both start off. Choose notification only or explicitly authorize root to reclaim clean file pages. If both are due on the same check there is one action. The ongoing notification can open the editor or stop the service. | No root for alerts, root for reclaim |
 | App cache | Open the selected app's Android details page. To remove temporary files, choose **Storage → Clear cache** there. **Clear storage/data** erases that app's data. | No root |
 | Old diagnostics | Preview eligible files, select individual entries and confirm permanent deletion. The preview reports allocated disk space. | Root |
+
+The usage threshold requires three qualifying 30-second samples and has a 30-minute cooldown. Re-arming normally requires usage to fall three percentage points below the threshold. For settings of 1–3%, falling below the threshold is sufficient. The interval operates independently of this cooldown. If Android suspends the service, missed intervals are coalesced into one at the next opportunity. Changing active settings restarts the interval. Monitoring needs notifications and stops on reboot.
 
 ## What gets touched
 

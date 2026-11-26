@@ -7,19 +7,17 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
-import android.graphics.Canvas;
 import android.graphics.Color;
-import android.graphics.Paint;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.RippleDrawable;
 import android.os.Build;
 import android.os.Bundle;
-import android.provider.Settings;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.StatFs;
+import android.provider.Settings;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.*;
@@ -47,37 +45,22 @@ public final class MainActivity extends Activity {
       MINT = 0xffb9efd1;
   private static final int MATCH = -1, WRAP = -2;
   private static final String[] TABS = {"运存", "存储", "记录"};
-  private static final String[] MODES = {"文件页", "内核缓存", "两者"};
-  private static final String[] ACTIONS = {"回收文件页缓存", "回收可释放的内核缓存", "一起回收两类缓存"};
-  private static final String[] HINTS = {
-    "回收内存中可重新读取的文件页。下次打开应用时可能需要重新读取。", "回收可释放的目录项和文件节点等内核对象。", "同时回收文件页和可释放的内核对象。应用内容可能需要重新载入。"
-  };
   private static final AtomicBoolean ACTIVE = new AtomicBoolean();
   private static final ExecutorService JOBS = Executors.newSingleThreadExecutor();
   private static volatile boolean rootVerified;
   private static volatile String jobName = "";
   private final Handler handler = new Handler(Looper.getMainLooper());
-  private int tab, mode = 1;
+  private int tab;
   private LinearLayout body, nav;
-  private TextView available,
-      total,
-      rate,
-      cache,
-      slab,
-      swap,
-      pressure,
-      monitorNote,
-      progress,
-      rootButton;
-  private Ring ring;
+  private TextView monitorNote, progress, rootButton, runSelection;
+  private MemoryDashboard dashboard;
+  private AlertDialog watchDialog, manualDialog;
+  private WatchConfig pendingMonitor;
+  private int confirmMask;
   private MemoryTrend.Samples trendSamples;
   private MemoryTrend trend;
   private boolean returnToRanking, rankByCache = true;
-  private int pendingAlertThreshold;
-  private boolean pendingRootMonitor;
   private static final int ALERT_PERMISSION = 71;
-  private TextView modeHint, action;
-  private LinearLayout modeRow;
   private boolean resumed;
   private String shownHistory = "";
   private final Runnable poll =
@@ -86,7 +69,7 @@ public final class MainActivity extends Activity {
         public void run() {
           if (!resumed) return;
           update();
-          handler.postDelayed(this, 2000);
+          handler.postDelayed(this, tab == 0 ? 1000 : 2000);
         }
       };
 
@@ -98,13 +81,47 @@ public final class MainActivity extends Activity {
         ? (MemoryTrend.Samples) retained : new MemoryTrend.Samples();
     if (state != null) {
       tab = state.getInt("tab");
-      mode = state.getInt("mode", 1);
       rankByCache = state.getBoolean("rankByCache", true);
       returnToRanking = state.getBoolean("returnToRanking");
-      pendingAlertThreshold = state.getInt("pendingAlertThreshold");
-      pendingRootMonitor = state.getBoolean("pendingRootMonitor");
+      Bundle config = state.getBundle("pendingMonitor");
+      if (config != null) pendingMonitor = new WatchConfig(
+          config.getBoolean("threshold"), config.getInt("used"), config.getBoolean("interval"),
+          config.getInt("minutes"), config.getBoolean("root")
+              ? WatchService.Mode.ROOT_RECLAIM : WatchService.Mode.ALERT_ONLY);
     }
     draw();
+    if (state == null) {
+      handleShortcut(getIntent());
+    } else if (state.getBundle("watchEditor") != null) {
+      openMonitor(state.getBundle("watchEditor"));
+    } else if (state.containsKey("confirmMask")) {
+      confirmReclaim(state.getInt("confirmMask"), true);
+    }
+  }
+
+  @Override
+  protected void onNewIntent(Intent intent) {
+    super.onNewIntent(intent);
+    setIntent(intent);
+    handleShortcut(intent);
+  }
+
+  private void handleShortcut(Intent intent) {
+    if (intent == null) return;
+    String shortcut = intent.getAction();
+    if (!WatchService.ACTION_CONFIGURE.equals(shortcut)
+        && !ManualReclaim.TILE_CONFIRM.equals(shortcut)) return;
+    intent.setAction(null);
+    if (tab != 0) {
+      tab = 0;
+      draw();
+    }
+    if (WatchService.ACTION_CONFIGURE.equals(shortcut)) {
+      openMonitor(null);
+    } else {
+      // Any caller of the exported activity must receive an interactive confirmation.
+      confirmReclaim(ManualReclaim.FILES, true);
+    }
   }
 
   @Override
@@ -130,11 +147,20 @@ public final class MainActivity extends Activity {
   protected void onSaveInstanceState(Bundle b) {
     super.onSaveInstanceState(b);
     b.putInt("tab", tab);
-    b.putInt("mode", mode);
     b.putBoolean("rankByCache", rankByCache);
     b.putBoolean("returnToRanking", returnToRanking);
-    b.putInt("pendingAlertThreshold", pendingAlertThreshold);
-    b.putBoolean("pendingRootMonitor", pendingRootMonitor);
+    Bundle editor = WatchEditor.saveState(watchDialog);
+    if (editor != null) b.putBundle("watchEditor", editor);
+    if (manualDialog != null && manualDialog.isShowing()) b.putInt("confirmMask", confirmMask);
+    if (pendingMonitor != null) {
+      Bundle config = new Bundle();
+      config.putBoolean("threshold", pendingMonitor.thresholdEnabled);
+      config.putInt("used", pendingMonitor.usedPercent);
+      config.putBoolean("interval", pendingMonitor.intervalEnabled);
+      config.putInt("minutes", pendingMonitor.intervalMinutes);
+      config.putBoolean("root", pendingMonitor.mode == WatchService.Mode.ROOT_RECLAIM);
+      b.putBundle("pendingMonitor", config);
+    }
   }
 
   @Override
@@ -218,8 +244,8 @@ public final class MainActivity extends Activity {
 
   private void draw() {
     trend = null;
-    available = null;
-    ring = null;
+    dashboard = null;
+    runSelection = null;
     monitorNote = null;
     LinearLayout screen = column();
     screen.setBackgroundColor(BG);
@@ -280,32 +306,8 @@ public final class MainActivity extends Activity {
 
   private void memoryPage() {
     heading("运存概览");
-    LinearLayout hero = card(DARK), top = row(), numbers = column();
-    add(numbers, text("当前可用", 14, MINT, true));
-    gap(numbers, 5);
-    available = text("—", 33, WHITE, true);
-    add(numbers, available);
-    gap(numbers, 5);
-    total = text("", 13, 0xffc0d9cb, false);
-    add(numbers, total);
-    flex(top, numbers);
-    android.widget.FrameLayout graph = new android.widget.FrameLayout(this);
-    ring = new Ring(this);
-    graph.addView(ring);
-    rate = text("", 14, MINT, true);
-    rate.setGravity(Gravity.CENTER);
-    graph.addView(rate);
-    top.addView(graph, dp(75), dp(75));
-    add(hero, top);
-    gap(hero, 16);
-    LinearLayout metrics = row();
-    cache = metric(metrics, "文件页缓存");
-    slab = metric(metrics, "可回收内核");
-    swap = metric(metrics, "已用交换");
-    add(hero, metrics);
-    pressure = text("", 12, 0xffc0d9cb, false);
-    add(hero, pressure);
-    add(body, hero);
+    dashboard = new MemoryDashboard(this);
+    add(body, dashboard);
     gap(body, 12);
     LinearLayout chart = card(WHITE);
     add(chart, text("可用运存趋势", 18, TEXT, true));
@@ -314,54 +316,77 @@ public final class MainActivity extends Activity {
     add(body, chart);
     gap(body, 12);
     LinearLayout extras = card(WHITE);
-    monitorNote = rowAction(extras, "低运存监控", "", v -> monitor());
+    monitorNote = rowAction(extras, "自动监控", "", v -> openMonitor(null));
     add(body, extras);
     gap(body, 12);
     LinearLayout tools = card(WHITE);
     add(tools, text("手动回收 · Root", 18, TEXT, true));
     gap(tools, 10);
-    modeRow = row();
-    add(tools, modeRow);
-    gap(tools, 8);
-    modeHint = text("", 13, SUB, false);
-    add(tools, modeHint);
-    gap(tools, 10);
-    action = button("", GREEN, WHITE, v -> reclaim());
-    add(tools, action);
-    add(body, tools);
-    renderMode();
+    LinearLayout commands = row();
+    runSelection = button("", GREEN, WHITE, v -> confirmReclaim(ManualReclaim.selection(this), false));
+    flex(commands, runSelection);
+    TextView single = button("单项 ▾", LIGHT, GREEN, this::singleMenu);
+    commands.addView(single);
+    add(tools, commands);
+    updateSelection();
+    rowAction(tools, "选择默认组合", "主按钮使用此组合，单项操作只执行一次。", v -> chooseRegions());
+    Switch ask = new Switch(this);
+    ask.setText("手动回收前确认");
+    ask.setMinHeight(dp(48));
+    ask.setChecked(ManualReclaim.confirm(this));
+    ask.setOnCheckedChangeListener((widget, enabled) -> ManualReclaim.setConfirm(this, enabled));
+    add(tools, ask);
+    add(tools, text("涉及内核对象的操作始终提示可能的停顿。", 13, SUB, false));
     line(tools);
     rowAction(tools, "后台应用", "使用 Root 请求指定缓存进程释放运存", v -> chooseProcess());
+    add(body, tools);
   }
 
-  private TextView metric(LinearLayout parent, String name) {
-    LinearLayout cell = column();
-    TextView v = text("—", 15, WHITE, true);
-    add(cell, v);
-    gap(cell, 4);
-    add(cell, text(name, 12, 0xffc0d9cb, false));
-    flex(parent, cell);
-    return v;
+  private void updateSelection() {
+    if (runSelection != null) runSelection.setText("回收" + ManualReclaim.label(ManualReclaim.selection(this)));
   }
 
-  private void renderMode() {
-    modeRow.removeAllViews();
-    for (int i = 1; i <= 3; i++) {
-      final int x = i;
-      TextView t =
-          button(
-              MODES[i - 1],
-              mode == i ? LIGHT : WHITE,
-              mode == i ? GREEN : SUB,
-              v -> {
-                mode = x;
-                renderMode();
-              });
-      t.setSelected(mode == i);
-      flex(modeRow, t);
+  private void chooseRegions() {
+    int current = ManualReclaim.selection(this);
+    boolean[] checked = {(current & ManualReclaim.FILES) != 0, (current & ManualReclaim.OBJECTS) != 0};
+    AlertDialog dialog = new AlertDialog.Builder(this).setTitle("默认回收组合")
+        .setMultiChoiceItems(new String[] {ManualReclaim.label(1), ManualReclaim.label(2)},
+            checked, (d, which, enabled) -> {
+              checked[which] = enabled;
+              ((AlertDialog) d).getButton(AlertDialog.BUTTON_POSITIVE)
+                  .setEnabled(checked[0] || checked[1]);
+            })
+        .setNegativeButton("取消", null)
+        .setPositiveButton("保存", (d, w) -> {
+          int mask = (checked[0] ? ManualReclaim.FILES : 0) | (checked[1] ? ManualReclaim.OBJECTS : 0);
+          ManualReclaim.setSelection(this, mask);
+          updateSelection();
+        }).create();
+    dialog.show();
+  }
+
+  private void singleMenu(View anchor) {
+    PopupMenu menu = new PopupMenu(this, anchor);
+    menu.getMenu().add(0, ManualReclaim.FILES, 0, ManualReclaim.label(ManualReclaim.FILES));
+    menu.getMenu().add(0, ManualReclaim.OBJECTS, 1, ManualReclaim.label(ManualReclaim.OBJECTS));
+    menu.setOnMenuItemClickListener(item -> {
+      confirmReclaim(item.getItemId(), false);
+      return true;
+    });
+    menu.show();
+  }
+
+  private void confirmReclaim(int mask, boolean alwaysAsk) {
+    if (!alwaysAsk && mask == ManualReclaim.FILES && !ManualReclaim.confirm(this)) {
+      reclaim(mask);
+      return;
     }
-    modeHint.setText(HINTS[mode - 1]);
-    action.setText(ACTIONS[mode - 1]);
+    if (manualDialog != null && manualDialog.isShowing()) manualDialog.dismiss();
+    confirmMask = mask;
+    manualDialog = new AlertDialog.Builder(this)
+        .setTitle(mask == ManualReclaim.FILES ? "确认回收文件页？" : "此次回收可能造成停顿")
+        .setMessage("本次范围：" + ManualReclaim.label(mask) + "。\n" + ManualReclaim.caution(mask))
+        .setNegativeButton("取消", null).setPositiveButton("回收", (d, w) -> reclaim(mask)).show();
   }
 
   private TextView rowAction(
@@ -398,36 +423,17 @@ public final class MainActivity extends Activity {
       }
       return;
     }
-    if (tab != 0 || available == null) return;
+    if (tab != 0 || dashboard == null) return;
     MemStats m = MemStats.read(this);
+    dashboard.update(m);
     if (resumed && trend != null) trend.record(m);
-    available.setText(fmt(m.available));
-    total.setText("总运存  " + fmt(m.total));
-    int used =
-        m.total > 0 && m.available >= 0
-            ? (int) Math.round(100.0 * (m.total - m.available) / m.total)
-            : -1;
-    rate.setText(used < 0 ? "—" : "已用\n" + used + "%");
-    ring.value = used;
-    ring.invalidate();
-    cache.setText(fmt(m.cached));
-    slab.setText(fmt(m.reclaimable));
-    swap.setText(
-        fmt(m.swapTotal >= 0 && m.swapFree >= 0 ? Math.max(0, m.swapTotal - m.swapFree) : -1));
-    pressure.setVisibility(m.psiSome < 0 ? View.GONE : View.VISIBLE);
-    if (m.psiSome >= 0) {
-      pressure.setPadding(0, dp(12), 0, 0);
-      pressure.setText(String.format(Locale.ROOT, "近 10 秒等待内存的时间占比  %.2f%%", m.psiSome));
+    String status;
+    switch (WatchService.mode()) {
+      case ALERT_ONLY: status = "仅提醒 · 运行中"; break;
+      case ROOT_RECLAIM: status = "自动回收文件页 · 运行中"; break;
+      default: status = "已关闭 · 可设置占用阈值和定时间隔";
     }
-    if (monitorNote != null) {
-      String status;
-      switch (WatchService.mode()) {
-        case ALERT_ONLY: status = "仅提醒 · 已开启，点此停止"; break;
-        case ROOT_RECLAIM: status = "自动回收文件页 · 已开启，点此停止"; break;
-        default: status = "已关闭 · 可选免 Root 提醒或 Root 自动回收";
-      }
-      monitorNote.setText(status);
-    }
+    if (!status.contentEquals(monitorNote.getText())) monitorNote.setText(status);
   }
 
   static String fmt(long n) {
@@ -468,7 +474,7 @@ public final class MainActivity extends Activity {
       LinearLayout c = card(WHITE);
       add(c, text("暂无操作记录", 17, TEXT, true));
       gap(c, 6);
-      add(c, text("手动回收、阈值回收和诊断文件清理结果会保存在本机。", 14, SUB, false));
+      add(c, text("手动回收、自动提醒或回收、诊断文件清理的记录会保存在本机。", 14, SUB, false));
       add(body, c);
       return;
     }
@@ -516,8 +522,7 @@ public final class MainActivity extends Activity {
         });
   }
 
-  private void reclaim() {
-    final int selected = mode;
+  private void reclaim(final int selected) {
     final Context app = getApplicationContext();
     work(
         "正在回收运存",
@@ -540,71 +545,52 @@ public final class MainActivity extends Activity {
                   + fmt(a.reclaimable)
                   + " → "
                   + fmt(b.reclaimable);
-          History.add(app, ACTIONS[selected - 1], result);
+          History.add(app, "回收" + ManualReclaim.label(selected), result);
           return result;
         },
         v -> message("回收已执行", v));
   }
 
-  private void monitor() {
-    if (WatchService.isRunning()) {
-      WatchService.stop(this);
-      handler.postDelayed(this::update, 500);
-      toast("已请求停止低运存监控");
-      return;
-    }
-    LinearLayout options = column();
-    pad(options, 22, 12);
-    add(options, text("每 30 秒采样，连续 3 次低于阈值时触发。两次至少间隔 30 分钟。", 14, SUB, false));
-    String[] actions = {"仅通知提醒 · 免 Root", "自动回收文件页 · Root"};
-    Spinner behavior = new Spinner(this);
-    ArrayAdapter<String> choices = new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, actions);
-    behavior.setAdapter(choices);
-    behavior.setContentDescription("低运存时的操作");
-    add(options, behavior);
-    RadioGroup group = new RadioGroup(this);
-    for (int threshold : new int[] {5, 8, 10}) {
-      RadioButton option = new RadioButton(this);
-      option.setId(View.generateViewId());
-      option.setTag(threshold);
-      option.setText("可用运存低于 " + threshold + "%");
-      group.addView(option);
-      if (threshold == 8) group.check(option.getId());
-    }
-    add(options, group);
-    new AlertDialog.Builder(this)
-        .setTitle("低运存监控")
-        .setView(options)
-        .setNegativeButton("取消", null)
-        .setPositiveButton(
-            "开启",
-            (dialog, which) -> {
-              int threshold =
-                  (Integer) group.findViewById(group.getCheckedRadioButtonId()).getTag();
-              requestMonitor(threshold, behavior.getSelectedItemPosition() == 1);
-            })
-        .show();
+  private void openMonitor(Bundle editorState) {
+    if (watchDialog != null && watchDialog.isShowing()) return;
+    watchDialog = WatchEditor.show(this, new WatchEditor.Callback() {
+      @Override public void onSave(WatchConfig config) {
+        if (!config.hasTriggers()) {
+          config.save(MainActivity.this);
+          stopMonitor();
+        } else {
+          requestMonitor(config);
+        }
+      }
+
+      @Override public void onStop() { stopMonitor(); }
+    }, editorState);
   }
 
-  private void requestMonitor(int threshold, boolean withRoot) {
+  private void stopMonitor() {
+    WatchService.stop(this);
+    handler.postDelayed(this::update, 300);
+    toast("监控已关闭");
+  }
+
+  private void requestMonitor(WatchConfig config) {
     if (Build.VERSION.SDK_INT >= 33
         && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-      pendingAlertThreshold = threshold;
-      pendingRootMonitor = withRoot;
+      pendingMonitor = config;
       requestPermissions(new String[] {Manifest.permission.POST_NOTIFICATIONS}, ALERT_PERMISSION);
       return;
     }
-    startMonitor(threshold, withRoot);
+    startMonitor(config);
   }
 
   @Override
   public void onRequestPermissionsResult(int code, String[] permissions, int[] results) {
     super.onRequestPermissionsResult(code, permissions, results);
-    if (code != ALERT_PERMISSION || pendingAlertThreshold == 0) return;
-    int threshold = pendingAlertThreshold;
-    pendingAlertThreshold = 0;
+    if (code != ALERT_PERMISSION || pendingMonitor == null) return;
+    WatchConfig config = pendingMonitor;
+    pendingMonitor = null;
     if (results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED) {
-      startMonitor(threshold, pendingRootMonitor);
+      startMonitor(config);
     } else {
       notificationSettings();
     }
@@ -622,29 +608,28 @@ public final class MainActivity extends Activity {
         }).show();
   }
 
-  private void startMonitor(int threshold, boolean withRoot) {
-    WatchService.Mode selected = withRoot ? WatchService.Mode.ROOT_RECLAIM : WatchService.Mode.ALERT_ONLY;
-    if (!WatchService.notificationsEnabled(this, selected)) {
+  private void startMonitor(WatchConfig config) {
+    if (!WatchService.notificationsEnabled(this, config.mode)) {
       notificationSettings();
       return;
     }
-    if (withRoot) {
+    if (config.mode == WatchService.Mode.ROOT_RECLAIM) {
       work("正在检查监控权限", () -> Root.run("id -u", 20), id -> {
         if (!"0".equals(id)) {
           message("监控未启动", "自动回收需要 Root 授权。也可以选择仅通知提醒。");
           return;
         }
         rootVerified = true;
-        launchMonitor(threshold, selected);
+        launchMonitor(config);
       });
     } else {
-      launchMonitor(threshold, selected);
+      launchMonitor(config);
     }
   }
 
-  private void launchMonitor(int threshold, WatchService.Mode selected) {
+  private void launchMonitor(WatchConfig config) {
     try {
-      WatchService.start(this, threshold, selected);
+      WatchService.start(this, config);
       handler.postDelayed(this::update, 500);
       toast("已请求启动监控");
     } catch (RuntimeException e) { message("启动失败", reason(e)); }
@@ -887,27 +872,4 @@ public final class MainActivity extends Activity {
         });
   }
 
-  private final class Ring extends View {
-    int value = -1;
-    final Paint pen = new Paint(Paint.ANTI_ALIAS_FLAG);
-
-    Ring(Context c) {
-      super(c);
-      setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO);
-    }
-
-    @Override
-    protected void onDraw(Canvas canvas) {
-      float w = getWidth(), h = getHeight(), in = dp(5);
-      pen.setStyle(Paint.Style.STROKE);
-      pen.setStrokeWidth(dp(5));
-      pen.setStrokeCap(Paint.Cap.ROUND);
-      pen.setColor(0xff335e51);
-      canvas.drawArc(in, in, w - in, h - in, -90, 360, false, pen);
-      if (value > 0) {
-        pen.setColor(MINT);
-        canvas.drawArc(in, in, w - in, h - in, -90, 3.6f * value, false, pen);
-      }
-    }
-  }
 }

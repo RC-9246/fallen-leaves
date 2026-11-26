@@ -18,6 +18,7 @@ import android.os.SystemClock;
 import android.util.Log;
 import java.util.Locale;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
@@ -28,17 +29,21 @@ public final class WatchService extends Service {
     ROOT_RECLAIM
   }
 
+  public static final String ACTION_CONFIGURE = "dev.pagetrim.app.watch.CONFIGURE";
   private static final String TAG = "PageTrimWatch";
   private static final String ACTION_START = "dev.pagetrim.app.watch.START";
   private static final String ACTION_STOP = "dev.pagetrim.app.watch.STOP";
   private static final String EXTRA_THRESHOLD = "threshold";
+  private static final String EXTRA_USED = "used_percent";
+  private static final String EXTRA_THRESHOLD_ENABLED = "threshold_enabled";
+  private static final String EXTRA_INTERVAL = "interval_minutes";
+  private static final String EXTRA_INTERVAL_ENABLED = "interval_enabled";
   private static final String EXTRA_MODE = "mode";
   private static final String ALERT_CHANNEL = "low_memory_alerts";
   private static final int ALERT_ID = 105;
   private static final String CHANNEL = "memory_watch";
   private static final int NOTIFICATION_ID = 104;
-  private static final long SAMPLE_SECONDS = 30;
-  private static final long COOLDOWN_MS = TimeUnit.MINUTES.toMillis(30);
+
   private static final String PREFS = "memory_watch";
   private static final String LAST_ATTEMPT = "last_attempt_elapsed_ms";
   private static final String LAST_ALERT = "last_alert_elapsed_ms";
@@ -47,7 +52,7 @@ public final class WatchService extends Service {
   private static volatile Mode activeMode = Mode.OFF;
   private final Handler main = new Handler(Looper.getMainLooper());
   private volatile Sampler sampler;
-  private ScheduledExecutorService executor;
+
 
   public static boolean isRunning() {
     return activeMode != Mode.OFF;
@@ -78,21 +83,26 @@ public final class WatchService extends Service {
   }
 
   public static void start(Context context, int thresholdPercent, Mode mode) {
-    if (mode == null || mode == Mode.OFF) {
-      throw new IllegalArgumentException("请选择监控模式。");
-    }
-    if (!validThreshold(thresholdPercent)) {
+    if (!validThreshold(thresholdPercent))
       throw new IllegalArgumentException("低内存阈值必须为 5%、8% 或 10%。");
+    start(context, new WatchConfig(true, 100 - thresholdPercent, false, 30, mode));
+  }
+
+  public static void start(Context context, WatchConfig config) {
+    if (config == null || !config.hasTriggers()) {
+      throw new IllegalArgumentException("请至少启用一个触发条件。");
     }
-    if (!notificationsEnabled(context, mode)) {
+    if (!notificationsEnabled(context, config.mode)) {
       throw new IllegalStateException("请允许应用发送通知，并开启相应的通知类别。");
     }
-    Intent request =
-        new Intent(context, WatchService.class)
-            .setAction(ACTION_START)
-            .putExtra(EXTRA_THRESHOLD, thresholdPercent)
-            .putExtra(EXTRA_MODE, mode.name());
+    Intent request = new Intent(context, WatchService.class).setAction(ACTION_START)
+        .putExtra(EXTRA_USED, config.usedPercent)
+        .putExtra(EXTRA_THRESHOLD_ENABLED, config.thresholdEnabled)
+        .putExtra(EXTRA_INTERVAL, config.intervalMinutes)
+        .putExtra(EXTRA_INTERVAL_ENABLED, config.intervalEnabled)
+        .putExtra(EXTRA_MODE, config.mode.name());
     context.startForegroundService(request);
+    config.save(context);
   }
 
   public static void stop(Context context) {
@@ -109,28 +119,32 @@ public final class WatchService extends Service {
       return START_NOT_STICKY;
     }
 
-    int threshold = intent == null ? -1 : intent.getIntExtra(EXTRA_THRESHOLD, -1);
-    String requested = intent == null ? null : intent.getStringExtra(EXTRA_MODE);
-    Mode mode = Mode.OFF;
-    if (Mode.ALERT_ONLY.name().equals(requested)) mode = Mode.ALERT_ONLY;
-    if (Mode.ROOT_RECLAIM.name().equals(requested)) mode = Mode.ROOT_RECLAIM;
-    if (!ACTION_START.equals(action) || !validThreshold(threshold) || mode == Mode.OFF) {
+    if (!ACTION_START.equals(action) || intent == null) {
       stopSelf(startId);
       return START_NOT_STICKY;
     }
-
     try {
-      startForeground(NOTIFICATION_ID, createNotification(threshold, mode));
-      if (!notificationsEnabled(this, mode)) {
-        throw new IllegalStateException("系统通知或监控通知类别已关闭。");
+      Mode mode = Mode.valueOf(intent.getStringExtra(EXTRA_MODE));
+      WatchConfig config;
+      if (intent.hasExtra(EXTRA_USED)) {
+        config = new WatchConfig(intent.getBooleanExtra(EXTRA_THRESHOLD_ENABLED, false),
+            intent.getIntExtra(EXTRA_USED, -1), intent.getBooleanExtra(EXTRA_INTERVAL_ENABLED, false),
+            intent.getIntExtra(EXTRA_INTERVAL, -1), mode);
+      } else {
+        int threshold = intent.getIntExtra(EXTRA_THRESHOLD, -1);
+        if (!validThreshold(threshold)) throw new IllegalArgumentException("阈值无效");
+        config = new WatchConfig(true, 100 - threshold, false, 30, mode);
       }
+      if (!config.hasTriggers()) throw new IllegalArgumentException("没有启用的触发条件");
+      startForeground(NOTIFICATION_ID, createNotification(config));
+      if (!notificationsEnabled(this, mode))
+        throw new IllegalStateException("系统通知或监控通知类别已关闭。");
       Sampler current = sampler;
-      if (current == null || current.threshold != threshold || current.mode != mode) {
+      if (current == null || !current.config.sameSettings(config)) {
         cancelSampling();
-        Sampler next = new Sampler(threshold, mode);
+        Sampler next = new Sampler(config);
         sampler = next;
-        executor = Executors.newSingleThreadScheduledExecutor();
-        executor.scheduleWithFixedDelay(next, SAMPLE_SECONDS, SAMPLE_SECONDS, TimeUnit.SECONDS);
+        next.scheduleNext(next.timing.delay(SystemClock.elapsedRealtime()));
       }
       activeMode = mode;
     } catch (RuntimeException failure) {
@@ -155,15 +169,14 @@ public final class WatchService extends Service {
 
   private void cancelSampling() {
     activeMode = Mode.OFF;
+    Sampler current = sampler;
     sampler = null;
     getSystemService(NotificationManager.class).cancel(ALERT_ID);
-    if (executor != null) {
-      executor.shutdownNow();
-      executor = null;
-    }
+    if (current != null) current.worker.shutdownNow();
   }
 
-  private Notification createNotification(int threshold, Mode mode) {
+  private Notification createNotification(WatchConfig config) {
+    Mode mode = config.mode;
     NotificationManager manager = getSystemService(NotificationManager.class);
     manager.createNotificationChannel(
         new NotificationChannel(CHANNEL, "内存监控", NotificationManager.IMPORTANCE_LOW));
@@ -179,10 +192,11 @@ public final class WatchService extends Service {
         new Notification.Builder(this, CHANNEL)
             .setSmallIcon(android.R.drawable.stat_notify_sync)
             .setContentTitle(getString(R.string.app_name) + " 正在监控可用内存")
-            .setContentText("阈值 " + threshold + (mode == Mode.ALERT_ONLY ? "% · 仅提醒" : "% · 仅回收文件页缓存"))
-            .setContentIntent(openApp())
+            .setContentText(summary(config) + (mode == Mode.ALERT_ONLY ? " · 仅提醒" : " · 仅回收文件页缓存"))
+            .setContentIntent(openApp(false))
             .setOngoing(true)
             .setOnlyAlertOnce(true)
+            .addAction(new Notification.Action.Builder(null, "调整", openApp(true)).build())
             .addAction(new Notification.Action.Builder(null, "停止", stopAction).build());
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
       builder.setForegroundServiceBehavior(Notification.FOREGROUND_SERVICE_IMMEDIATE);
@@ -190,11 +204,19 @@ public final class WatchService extends Service {
     return builder.build();
   }
 
-  private PendingIntent openApp() {
+  private PendingIntent openApp(boolean configure) {
     Intent open = new Intent(this, MainActivity.class)
         .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+    if (configure) open.setAction(ACTION_CONFIGURE);
     return PendingIntent.getActivity(
-        this, 0, open, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        this, configure ? 1 : 0, open, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+  }
+
+  private static String summary(WatchConfig config) {
+    String usage = "已用 ≥ " + config.usedPercent + "%";
+    String interval = "每 " + config.intervalMinutes + " 分钟";
+    if (config.thresholdEnabled && config.intervalEnabled) return usage + " 或 " + interval;
+    return config.thresholdEnabled ? usage : interval;
   }
 
   private static boolean validThreshold(int threshold) {
@@ -208,61 +230,85 @@ public final class WatchService extends Service {
   }
 
   private final class Sampler implements Runnable {
-    private final int threshold;
-    private final Mode mode;
-    private int lowSamples;
-    private boolean armed = true;
+    private final WatchConfig config;
+    private final WatchTiming timing;
+    private final ScheduledExecutorService worker = Executors.newSingleThreadScheduledExecutor();
 
-    Sampler(int threshold, Mode mode) {
-      this.threshold = threshold;
-      this.mode = mode;
+    Sampler(WatchConfig config) {
+      this.config = config;
+      timing = new WatchTiming(config.thresholdEnabled, config.usedPercent, config.intervalEnabled,
+          config.intervalMinutes, SystemClock.elapsedRealtime());
     }
 
-    @Override
-    public void run() {
+    private void scheduleNext(long delay) {
+      if (inactive() || worker.isShutdown()) return;
+      try {
+        worker.schedule(this, delay, TimeUnit.MILLISECONDS);
+      } catch (RejectedExecutionException closed) {
+        if (!worker.isShutdown()) throw closed;
+      }
+    }
+
+    @Override public void run() {
       if (inactive()) return;
       try {
         sample();
       } catch (RuntimeException error) {
-        lowSamples = 0;
         Log.w(TAG, "Memory sampling failed", error);
+        scheduleNext(WatchTiming.SAMPLE_MS);
+        return;
       }
+      scheduleNext(timing.delay(SystemClock.elapsedRealtime()));
     }
 
     private void sample() {
-      if (!notificationsEnabled(WatchService.this, mode)) {
+      if (!notificationsEnabled(WatchService.this, config.mode)) {
+        worker.shutdown();
         main.post(this::stopForBlockedNotifications);
         return;
       }
-      MemStats stats = MemStats.read(WatchService.this);
-      if (stats.total <= 0 || stats.available < 0 || stats.available > stats.total) {
-        lowSamples = 0;
-        return;
-      }
-      double availablePercent = 100.0 * stats.available / stats.total;
-      if (availablePercent >= threshold) {
-        lowSamples = 0;
-        if (!armed && availablePercent >= threshold + 3) {
-          armed = true;
-          if (mode == Mode.ALERT_ONLY) main.post(() -> {
-            if (sampler == this) getSystemService(NotificationManager.class).cancel(ALERT_ID);
-          });
+      long now = SystemClock.elapsedRealtime();
+      double used = Double.NaN;
+      if (config.thresholdEnabled && timing.sampleDue(now)) {
+        try {
+          MemStats stats = MemStats.read(WatchService.this);
+          if (stats.total > 0 && stats.available >= 0 && stats.available <= stats.total) {
+            used = 100.0 * (stats.total - stats.available) / stats.total;
+          }
+        } catch (RuntimeException error) {
+          Log.w(TAG, "Memory counters unavailable", error);
         }
+      }
+      String key = config.mode == Mode.ALERT_ONLY ? LAST_ALERT : LAST_ATTEMPT;
+      boolean wasArmed = timing.isArmed();
+      int reasons;
+      synchronized (ATTEMPT_LOCK) {
+        if (inactive()) return;
+        SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        reasons = timing.tick(now, used, prefs.getLong(key, -1L));
+        if ((reasons & WatchTiming.THRESHOLD) != 0 && !prefs.edit().putLong(key, now).commit()) {
+          reasons &= ~WatchTiming.THRESHOLD;
+        }
+      }
+      if (!wasArmed && timing.isArmed() && !config.intervalEnabled && config.mode == Mode.ALERT_ONLY) {
+        main.post(() -> {
+          if (sampler == this) getSystemService(NotificationManager.class).cancel(ALERT_ID);
+        });
+      }
+      if (reasons == 0 || inactive()) return;
+      String detail;
+      if ((reasons & WatchTiming.THRESHOLD) != 0) {
+        detail = String.format(Locale.ROOT, "已用运存 %.1f%%，阈值 %d%%", used, config.usedPercent)
+            + ((reasons & WatchTiming.INTERVAL) != 0 ? "；定时间隔亦已到达" : "");
+      } else {
+        detail = "已到 " + config.intervalMinutes + " 分钟间隔";
+      }
+      if (config.mode == Mode.ALERT_ONLY) {
+        boolean low = (reasons & WatchTiming.THRESHOLD) != 0;
+        main.post(() -> postAlert(low, detail));
         return;
       }
-      if (!armed) return;
-      lowSamples = Math.min(3, lowSamples + 1);
-      if (lowSamples < 3 || !claimAttempt() || inactive()) return;
-      lowSamples = 0;
-      armed = false;
-      if (mode == Mode.ALERT_ONLY) {
-        main.post(() -> postLowMemoryAlert(availablePercent));
-        return;
-      }
-      History.add(
-          WatchService.this,
-          "自动回收尝试",
-          String.format(Locale.ROOT, "可用内存 %.1f%%，阈值 %d%%", availablePercent, threshold));
+      History.add(WatchService.this, "自动回收尝试", detail);
       try {
         if (inactive()) throw new InterruptedException();
         RamController.reclaim(1);
@@ -284,18 +330,18 @@ public final class WatchService extends Service {
       stopSelf();
     }
 
-    private void postLowMemoryAlert(double percent) {
+    private void postAlert(boolean low, String detail) {
       if (sampler != this) return;
-      if (!notificationsEnabled(WatchService.this, mode)) {
+      if (!notificationsEnabled(WatchService.this, config.mode)) {
         stopForBlockedNotifications();
         return;
       }
-      String detail = String.format(Locale.ROOT, "可用内存 %.1f%%，低于 %d%% 阈值", percent, threshold);
+
       Notification alert = new Notification.Builder(WatchService.this, ALERT_CHANNEL)
           .setSmallIcon(android.R.drawable.stat_notify_more)
-          .setContentTitle("可用内存偏低")
+          .setContentTitle(low ? "可用内存偏低" : "定时内存提醒")
           .setContentText(detail)
-          .setContentIntent(openApp())
+          .setContentIntent(openApp(false))
           .setAutoCancel(true)
           .build();
       try {
@@ -304,20 +350,7 @@ public final class WatchService extends Service {
         stopForBlockedNotifications();
         return;
       }
-      History.add(WatchService.this, "低运存提醒", detail);
-    }
-
-    private boolean claimAttempt() {
-      synchronized (ATTEMPT_LOCK) {
-        if (inactive()) return false;
-        SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
-        long now = SystemClock.elapsedRealtime();
-        String key = mode == Mode.ALERT_ONLY ? LAST_ALERT : LAST_ATTEMPT;
-        long prior = prefs.getLong(key, -1L);
-        // If the elapsed clock reset after reboot, wait at least 30 minutes from boot.
-        if (prior >= 0 && now - (now < prior ? 0 : prior) < COOLDOWN_MS) return false;
-        return prefs.edit().putLong(key, now).commit();
-      }
+      History.add(WatchService.this, low ? "低运存提醒" : "定时内存提醒", detail);
     }
 
     private boolean inactive() {

@@ -13,7 +13,7 @@ import java.util.Locale;
 
 /** Shows the foreground samples collected by the memory page's existing refresh loop. */
 final class MemoryTrend extends LinearLayout {
-  private static final long INTERVAL = 2_000L;
+  private static final long INTERVAL = 1_000L;
   private static final long WINDOW = 120_000L;
   private static final long MAX_GAP = 3 * INTERVAL;
   private static final int LIMIT = (int) (WINDOW / INTERVAL) + 1;

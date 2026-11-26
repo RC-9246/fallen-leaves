@@ -25,6 +25,20 @@ public final class MemStats {
   /** Percentage of time with some memory pressure, averaged over ten seconds. */
   public final double psiSome;
 
+  long usedRam() {
+    return total > 0 && available >= 0 ? total - available : -1;
+  }
+
+  long usedSwap() {
+    return swapTotal >= 0 && swapFree >= 0 && swapFree <= swapTotal ? swapTotal - swapFree : -1;
+  }
+
+  /** File cache excluding shmem plus reclaimable slab. Some pages may be dirty or in use. */
+  long estimatedCache() {
+    if (cached < 0 || reclaimable < 0 || cached > Long.MAX_VALUE - reclaimable) return -1;
+    return cached + reclaimable;
+  }
+
   private MemStats(Map<String, Long> values, long total, long available, double psiSome) {
     this.total = total;
     this.available = total > 0 ? Math.min(total, available) : available;

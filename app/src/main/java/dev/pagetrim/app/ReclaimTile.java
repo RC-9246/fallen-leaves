@@ -1,6 +1,8 @@
 package dev.pagetrim.app;
 
+import android.app.PendingIntent;
 import android.content.Context;
+import android.content.Intent;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
@@ -44,9 +46,25 @@ public final class ReclaimTile extends TileService {
     if (BUSY.get()) return;
     Context app = getApplicationContext();
     if (isLocked()) {
-      unlockAndRun(() -> startReclaim(app));
+      unlockAndRun(() -> requestReclaim(app));
     } else {
-      startReclaim(app);
+      requestReclaim(app);
+    }
+  }
+
+  private void requestReclaim(Context context) {
+    if (!ManualReclaim.confirm(context)) {
+      startReclaim(context);
+      return;
+    }
+    Intent confirm = new Intent(this, MainActivity.class)
+        .setAction(ManualReclaim.TILE_CONFIRM)
+        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+    if (Build.VERSION.SDK_INT >= 34) {
+      startActivityAndCollapse(PendingIntent.getActivity(this, 8, confirm,
+          PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE));
+    } else {
+      startActivityAndCollapse(confirm);
     }
   }
 
