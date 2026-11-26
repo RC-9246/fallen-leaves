@@ -10,10 +10,12 @@ Requires Android 8.0 or newer. Open **运存** to see the dashboard. You can rea
 
 | Control | What it does | Access |
 | --- | --- | --- |
+| Available RAM trend | Samples every two seconds while the memory page is visible. Shows up to two minutes of local readings, a graph and a text summary. Sampling gaps are visible. | No root |
+| Storage ranking | In **存储 → 应用占用排行**, grant Usage Access in Android settings to rank eligible user apps by cache size or total disk usage. Tap an entry to open system settings. Total includes cache once. Unavailable values are labeled. | No root, optional Usage Access |
 | Memory reclaim | Ask the Linux kernel to drop clean file pages, reclaimable filesystem objects such as dentries and inodes, or both. Shows before and after readings. | Root |
 | Quick Settings tile | Add **回收文件页** in the system tile editor. Tapping it requests file-page reclaim. | Root |
 | Background apps | Select an eligible cached user process and send a memory-trim request. The app rechecks its identity and cached state before sending. The recipient decides what to release. Android 14 and later may ignore the request. | Root |
-| Low-memory monitor | Opt in to a foreground service with a notification. It samples every 30 seconds and requests file-page reclaim after three consecutive readings below 5%, 8% or 10% available RAM. Attempts are at least 30 minutes apart. Available RAM must recover to 3 percentage points above the threshold to rearm. Start it again after reboot if wanted. | Root to reclaim |
+| Low-memory monitor | Opt in to a foreground service with a notification. Choose notification only (default) or automatic file-page reclaim. Both sample every 30 seconds and trigger after three consecutive readings below 5%, 8% or 10% available RAM. Grant notification access and enable the corresponding channels. Attempts are at least 30 minutes apart. Available RAM must recover to 3 percentage points above the threshold to rearm. Start it again after reboot if wanted. | No root for alerts, root for reclaim |
 | App cache | Open the selected app's Android details page. To remove temporary files, choose **Storage → Clear cache** there. **Clear storage/data** erases that app's data. | No root |
 | Old diagnostics | Preview eligible files, select individual entries and confirm permanent deletion. The preview reports allocated disk space. | Root |
 
@@ -34,9 +36,9 @@ Use JDK 17, Android SDK Platform 34, Build Tools 34.0.0, Bash, zip and OpenSSL. 
 ./build.sh
 ```
 
-The release build produces `build/Fallen-Leaves.apk`. Use `./build.sh debug` for a debug build. The script keeps signing material outside the project. Set `FALLEN_LEAVES_SIGNING_DIR` to reuse your own signing identity across builds. Published builds retain PageTrim's application ID, `dev.pagetrim.app`, and signing identity for in-place upgrades. An independent build needs the matching key to update an existing installation. Minimum SDK 26, target SDK 32.
+The release build produces `build/Fallen-Leaves.apk`. Use `./build.sh debug` for a debug build. The script keeps signing material outside the project. Set `FALLEN_LEAVES_SIGNING_DIR` to reuse your own signing identity across builds. Published builds retain PageTrim's application ID, `dev.pagetrim.app`, and signing identity for in-place upgrades. An independent build needs the matching key to update an existing installation. Minimum SDK 26, target SDK 33.
 
-The policy tests cover path and filename limits, age, link count, disk block accounting, empty selection and invalid reclaim modes. The underlying controls were also exercised on an Android 11 AOSP emulator, including all three kernel modes and selected diagnostic-file deletion. Privileged tests used a test root shell. They do not establish compatibility with every kernel or with a physical KernelSU phone.
+The policy tests cover path and filename limits, age, link count, disk block accounting, empty selection and invalid reclaim modes. The 1.0.1 to 1.1.0 upgrade, foreground memory trend, notification-only monitor start/stop, usage-access round trip, both ranking orders and app settings navigation were exercised on an Android 11 emulator. Two test apps had different data and cache footprints. Alert thresholds, cooldown and mode isolation were also checked with simulated readings. The underlying controls were also exercised on an Android 11 AOSP emulator, including all three kernel modes and selected diagnostic-file deletion. Privileged tests used a test root shell. They do not establish compatibility with every kernel or with a physical KernelSU phone.
 
 ## Development and license
 

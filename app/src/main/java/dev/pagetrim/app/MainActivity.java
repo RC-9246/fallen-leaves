@@ -1,8 +1,11 @@
 package dev.pagetrim.app;
 
+import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Context;
+import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
 import android.graphics.Canvas;
 import android.graphics.Color;
@@ -10,7 +13,9 @@ import android.graphics.Paint;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.RippleDrawable;
+import android.os.Build;
 import android.os.Bundle;
+import android.provider.Settings;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
@@ -65,6 +70,12 @@ public final class MainActivity extends Activity {
       progress,
       rootButton;
   private Ring ring;
+  private MemoryTrend.Samples trendSamples;
+  private MemoryTrend trend;
+  private boolean returnToRanking, rankByCache = true;
+  private int pendingAlertThreshold;
+  private boolean pendingRootMonitor;
+  private static final int ALERT_PERMISSION = 71;
   private TextView modeHint, action;
   private LinearLayout modeRow;
   private boolean resumed;
@@ -82,9 +93,16 @@ public final class MainActivity extends Activity {
   @Override
   protected void onCreate(Bundle state) {
     super.onCreate(state);
+    Object retained = getLastNonConfigurationInstance();
+    trendSamples = retained instanceof MemoryTrend.Samples
+        ? (MemoryTrend.Samples) retained : new MemoryTrend.Samples();
     if (state != null) {
       tab = state.getInt("tab");
       mode = state.getInt("mode", 1);
+      rankByCache = state.getBoolean("rankByCache", true);
+      returnToRanking = state.getBoolean("returnToRanking");
+      pendingAlertThreshold = state.getInt("pendingAlertThreshold");
+      pendingRootMonitor = state.getBoolean("pendingRootMonitor");
     }
     draw();
   }
@@ -95,6 +113,10 @@ public final class MainActivity extends Activity {
     resumed = true;
     handler.removeCallbacks(poll);
     poll.run();
+    if (returnToRanking) {
+      returnToRanking = false;
+      if (tab == 1 && StorageRanking.hasUsageAccess(this)) showRanking();
+    }
   }
 
   @Override
@@ -109,6 +131,15 @@ public final class MainActivity extends Activity {
     super.onSaveInstanceState(b);
     b.putInt("tab", tab);
     b.putInt("mode", mode);
+    b.putBoolean("rankByCache", rankByCache);
+    b.putBoolean("returnToRanking", returnToRanking);
+    b.putInt("pendingAlertThreshold", pendingAlertThreshold);
+    b.putBoolean("pendingRootMonitor", pendingRootMonitor);
+  }
+
+  @Override
+  public Object onRetainNonConfigurationInstance() {
+    return trendSamples;
   }
 
   private int dp(float v) {
@@ -186,6 +217,7 @@ public final class MainActivity extends Activity {
   }
 
   private void draw() {
+    trend = null;
     available = null;
     ring = null;
     monitorNote = null;
@@ -275,8 +307,18 @@ public final class MainActivity extends Activity {
     add(hero, pressure);
     add(body, hero);
     gap(body, 12);
+    LinearLayout chart = card(WHITE);
+    add(chart, text("可用运存趋势", 18, TEXT, true));
+    trend = new MemoryTrend(this, trendSamples);
+    add(chart, trend);
+    add(body, chart);
+    gap(body, 12);
+    LinearLayout extras = card(WHITE);
+    monitorNote = rowAction(extras, "低运存监控", "", v -> monitor());
+    add(body, extras);
+    gap(body, 12);
     LinearLayout tools = card(WHITE);
-    add(tools, text("手动回收", 18, TEXT, true));
+    add(tools, text("手动回收 · Root", 18, TEXT, true));
     gap(tools, 10);
     modeRow = row();
     add(tools, modeRow);
@@ -288,12 +330,8 @@ public final class MainActivity extends Activity {
     add(tools, action);
     add(body, tools);
     renderMode();
-    gap(body, 12);
-    LinearLayout extras = card(WHITE);
-    rowAction(extras, "后台应用", "请求指定缓存进程自行释放运存", v -> chooseProcess());
-    line(extras);
-    monitorNote = rowAction(extras, "低运存监控", "", v -> monitor());
-    add(body, extras);
+    line(tools);
+    rowAction(tools, "后台应用", "使用 Root 请求指定缓存进程释放运存", v -> chooseProcess());
   }
 
   private TextView metric(LinearLayout parent, String name) {
@@ -362,6 +400,7 @@ public final class MainActivity extends Activity {
     }
     if (tab != 0 || available == null) return;
     MemStats m = MemStats.read(this);
+    if (resumed && trend != null) trend.record(m);
     available.setText(fmt(m.available));
     total.setText("总运存  " + fmt(m.total));
     int used =
@@ -380,8 +419,15 @@ public final class MainActivity extends Activity {
       pressure.setPadding(0, dp(12), 0, 0);
       pressure.setText(String.format(Locale.ROOT, "近 10 秒等待内存的时间占比  %.2f%%", m.psiSome));
     }
-    if (monitorNote != null)
-      monitorNote.setText(WatchService.isRunning() ? "已开启 · 点此停止" : "已关闭 · 选择阈值后可开启");
+    if (monitorNote != null) {
+      String status;
+      switch (WatchService.mode()) {
+        case ALERT_ONLY: status = "仅提醒 · 已开启，点此停止"; break;
+        case ROOT_RECLAIM: status = "自动回收文件页 · 已开启，点此停止"; break;
+        default: status = "已关闭 · 可选免 Root 提醒或 Root 自动回收";
+      }
+      monitorNote.setText(status);
+    }
   }
 
   static String fmt(long n) {
@@ -404,9 +450,11 @@ public final class MainActivity extends Activity {
     add(body, hero);
     gap(body, 12);
     LinearLayout c = card(WHITE);
-    rowAction(c, "历史诊断文件", "扫描 7 天前的崩溃、无响应、WLAN 转储及一加诊断日志，可逐项选择。", v -> scanLogs());
+    rowAction(c, "应用占用排行", "按缓存或总占用排序，点选应用查看系统存储设置。", v -> showRanking());
     line(c);
-    rowAction(c, "应用缓存", "选择应用后，在系统的存储页面点“清除缓存”。", v -> chooseApp());
+    rowAction(c, "应用缓存", "直接选择应用，在系统存储页点“清除缓存”。", v -> chooseApp());
+    line(c);
+    rowAction(c, "历史诊断文件 · Root", "扫描满 7 天的崩溃记录、无响应追踪和指定厂商诊断日志。", v -> scanLogs());
     add(body, c);
     gap(body, 14);
     add(body, text("诊断扫描只访问指定的系统日志目录。下载、照片和聊天目录均不在扫描范围内。", 13, SUB, false));
@@ -507,7 +555,13 @@ public final class MainActivity extends Activity {
     }
     LinearLayout options = column();
     pad(options, 22, 12);
-    add(options, text("每 30 秒采样，连续 3 次低于阈值时回收文件页。两次至少间隔 30 分钟，可从通知停止。", 14, SUB, false));
+    add(options, text("每 30 秒采样，连续 3 次低于阈值时触发。两次至少间隔 30 分钟。", 14, SUB, false));
+    String[] actions = {"仅通知提醒 · 免 Root", "自动回收文件页 · Root"};
+    Spinner behavior = new Spinner(this);
+    ArrayAdapter<String> choices = new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, actions);
+    behavior.setAdapter(choices);
+    behavior.setContentDescription("低运存时的操作");
+    add(options, behavior);
     RadioGroup group = new RadioGroup(this);
     for (int threshold : new int[] {5, 8, 10}) {
       RadioButton option = new RadioButton(this);
@@ -527,25 +581,73 @@ public final class MainActivity extends Activity {
             (dialog, which) -> {
               int threshold =
                   (Integer) group.findViewById(group.getCheckedRadioButtonId()).getTag();
-              work(
-                  "正在检查监控权限",
-                  () -> Root.run("id -u", 20),
-                  id -> {
-                    if (!"0".equals(id)) {
-                      message("监控未启动", "需要 Root 授权。");
-                      return;
-                    }
-                    rootVerified = true;
-                    try {
-                      WatchService.start(this, threshold);
-                      handler.postDelayed(this::update, 600);
-                      toast("已请求启动监控");
-                    } catch (RuntimeException e) {
-                      message("启动失败", reason(e));
-                    }
-                  });
+              requestMonitor(threshold, behavior.getSelectedItemPosition() == 1);
             })
         .show();
+  }
+
+  private void requestMonitor(int threshold, boolean withRoot) {
+    if (Build.VERSION.SDK_INT >= 33
+        && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+      pendingAlertThreshold = threshold;
+      pendingRootMonitor = withRoot;
+      requestPermissions(new String[] {Manifest.permission.POST_NOTIFICATIONS}, ALERT_PERMISSION);
+      return;
+    }
+    startMonitor(threshold, withRoot);
+  }
+
+  @Override
+  public void onRequestPermissionsResult(int code, String[] permissions, int[] results) {
+    super.onRequestPermissionsResult(code, permissions, results);
+    if (code != ALERT_PERMISSION || pendingAlertThreshold == 0) return;
+    int threshold = pendingAlertThreshold;
+    pendingAlertThreshold = 0;
+    if (results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED) {
+      startMonitor(threshold, pendingRootMonitor);
+    } else {
+      notificationSettings();
+    }
+  }
+
+  private void notificationSettings() {
+    new AlertDialog.Builder(this).setTitle("需要允许通知")
+        .setMessage("在系统设置中启用落叶的通知以及对应的监控与提醒频道，然后重新开启监控。")
+        .setNegativeButton("取消", null)
+        .setPositiveButton("通知设置", (d, w) -> {
+          try {
+            startActivity(new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                .putExtra(Settings.EXTRA_APP_PACKAGE, getPackageName()));
+          } catch (RuntimeException e) { message("无法打开设置", reason(e)); }
+        }).show();
+  }
+
+  private void startMonitor(int threshold, boolean withRoot) {
+    WatchService.Mode selected = withRoot ? WatchService.Mode.ROOT_RECLAIM : WatchService.Mode.ALERT_ONLY;
+    if (!WatchService.notificationsEnabled(this, selected)) {
+      notificationSettings();
+      return;
+    }
+    if (withRoot) {
+      work("正在检查监控权限", () -> Root.run("id -u", 20), id -> {
+        if (!"0".equals(id)) {
+          message("监控未启动", "自动回收需要 Root 授权。也可以选择仅通知提醒。");
+          return;
+        }
+        rootVerified = true;
+        launchMonitor(threshold, selected);
+      });
+    } else {
+      launchMonitor(threshold, selected);
+    }
+  }
+
+  private void launchMonitor(int threshold, WatchService.Mode selected) {
+    try {
+      WatchService.start(this, threshold, selected);
+      handler.postDelayed(this::update, 500);
+      toast("已请求启动监控");
+    } catch (RuntimeException e) { message("启动失败", reason(e)); }
   }
 
   private void chooseProcess() {
@@ -581,6 +683,52 @@ public final class MainActivity extends Activity {
               .setNegativeButton("取消", null)
               .show();
         });
+  }
+
+  private void showRanking() {
+    if (!StorageRanking.hasUsageAccess(this)) {
+      new AlertDialog.Builder(this).setTitle("允许读取应用占用")
+          .setMessage("在系统的“使用情况访问权限”中允许落叶读取应用占用。排行在本机计算。也可以直接按名称选择应用。")
+          .setPositiveButton("打开授权设置", (d, w) -> {
+            try {
+              returnToRanking = true;
+              StorageRanking.openUsageAccessSettings(this);
+            } catch (RuntimeException e) {
+              returnToRanking = false;
+              message("无法打开设置", reason(e));
+            }
+          }).setNeutralButton("按名称选择", (d, w) -> chooseApp()).setNegativeButton("取消", null).show();
+      return;
+    }
+    work("正在统计应用占用", () -> StorageRanking.list(getApplicationContext()), this::displayRanking);
+  }
+
+  private void displayRanking(List<StorageRanking.Entry> entries) {
+    if (entries.isEmpty()) {
+      message("应用占用排行", "当前用户没有可列出的应用。");
+      return;
+    }
+    StorageRanking.sort(entries, rankByCache);
+    String[] rows = new String[entries.size()];
+    for (int i = 0; i < entries.size(); i++) {
+      StorageRanking.Entry e = entries.get(i);
+      rows[i] = e.label + " · " + e.pkg + "\n" + (e.available
+          ? "缓存 " + fmt(e.cacheBytes) + "　总占用 " + fmt(e.totalBytes)
+          : "系统暂未提供占用统计");
+    }
+    new AlertDialog.Builder(this).setTitle(rankByCache ? "应用占用 · 按缓存排序" : "应用占用 · 按总占用排序")
+        .setItems(rows, (d, i) -> {
+          try {
+            returnToRanking = true;
+            StorageController.openSettings(this, entries.get(i).pkg);
+          } catch (RuntimeException e) {
+            returnToRanking = false;
+            message("无法打开应用信息", reason(e));
+          }
+        }).setNeutralButton(rankByCache ? "按总占用排序" : "按缓存排序", (d, w) -> {
+          rankByCache = !rankByCache;
+          displayRanking(entries);
+        }).setNegativeButton("关闭", null).show();
   }
 
   private void chooseApp() {

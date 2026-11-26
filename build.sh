@@ -67,7 +67,7 @@ mkdir -- "$stage/generated" "$stage/classes" "$stage/dex"
 link_args=(
     -I "$android_jar" --manifest "$source_dir/AndroidManifest.xml"
     --java "$stage/generated" -o "$stage/unsigned.apk"
-    --min-sdk-version 26 --target-sdk-version 32
+    --min-sdk-version 26 --target-sdk-version 33
 )
 if [[ $mode == debug ]]; then
     link_args+=(--debug-mode)
