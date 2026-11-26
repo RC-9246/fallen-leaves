@@ -40,8 +40,8 @@ public final class ProcessTrim {
     /** RSS in bytes. RSS can include shared pages across processes. */
     public final long rss;
 
-    private final int pid, uid;
-    private final long start;
+    final int pid, uid;
+    final long start;
 
     private Entry(
         String label, String pkg, String process, long rss, int pid, int uid, long start) {
@@ -104,7 +104,7 @@ public final class ProcessTrim {
     return result;
   }
 
-  private static boolean sameApp(PackageManager pm, String pkg, int uid)
+  static boolean sameApp(PackageManager pm, String pkg, int uid)
       throws PackageManager.NameNotFoundException {
     ApplicationInfo info = pm.getApplicationInfo(pkg, 0);
     if (info.uid != uid
@@ -162,6 +162,7 @@ public final class ProcessTrim {
             + " '"
             + entry.process
             + "' COMPLETE";
+    LegacyScope.require(ctx, LegacyScope.Scope.TRIM);
     String response = Root.run(cmd, 15).trim();
     String lower = response.toLowerCase(Locale.ROOT);
     if (lower.contains("error")

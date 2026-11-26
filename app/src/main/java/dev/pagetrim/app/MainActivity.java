@@ -44,7 +44,7 @@ public final class MainActivity extends Activity {
   private TextView monitorNote, progress, rootButton, runSelection;
   private MemoryDashboard dashboard;
   private AlertDialog watchDialog, manualDialog;
-  private AlertDialog appearanceDialog;
+  private AlertDialog appearanceDialog, extendedDialog;
   private WatchConfig pendingMonitor;
   private int confirmMask;
   private Switch askBeforeReclaim;
@@ -92,6 +92,8 @@ public final class MainActivity extends Activity {
       handleShortcut(getIntent());
     } else if (state.containsKey("appearanceDraft")) {
       appearanceDialog = AppAppearance.show(this, state.getBundle("appearanceDraft"));
+    } else if (state.getBoolean("extendedDialog")) {
+      openExtended();
     } else if (state.getBundle("watchEditor") != null) {
       openMonitor(state.getBundle("watchEditor"));
     } else if (state.containsKey("confirmMask")) {
@@ -156,6 +158,7 @@ public final class MainActivity extends Activity {
       AppAppearance form = appearanceDialog.findViewById(R.id.appearance_form);
       b.putBundle("appearanceDraft", form.snapshot());
     }
+    b.putBoolean("extendedDialog", extendedDialog != null && extendedDialog.isShowing());
     Bundle editor = WatchEditor.saveState(watchDialog);
     if (editor != null) b.putBundle("watchEditor", editor);
     if (manualDialog != null && manualDialog.isShowing()) {
@@ -355,12 +358,28 @@ public final class MainActivity extends Activity {
     add(tools, askBeforeReclaim);
     add(tools, text("涉及内核对象的操作始终提示可能的停顿。", 13, R.color.leaf_secondary, false));
     line(tools);
-    rowAction(tools, "后台应用", "使用 Root 请求指定缓存进程释放运存", v -> chooseProcess());
+    rowAction(tools, "后台应用", "通知选定的缓存进程自行释放运存。", v -> chooseProcess());
+    line(tools);
+    rowAction(tools, "扩展回收范围", "设置各项开关，按应用回收内存或整理共享池。", v -> openExtended());
     add(body, tools);
   }
 
+  private void openExtended() {
+    if (extendedDialog == null || !extendedDialog.isShowing()) {
+      extendedDialog = new ExtendedReclaimPanel(this).show();
+      extendedDialog.setOnDismissListener(d -> updateSelection());
+    }
+  }
+
   private void updateSelection() {
-    if (runSelection != null) runSelection.setText("回收" + ManualReclaim.label(ManualReclaim.selection(this)));
+    if (runSelection == null) return;
+    int mask = ManualReclaim.selection(this);
+    try {
+      LegacyScope.requireMemory(this, mask);
+      runSelection.setText("回收" + ManualReclaim.label(mask));
+    } catch (IllegalStateException e) {
+      runSelection.setText("默认组合含已关闭范围");
+    }
   }
 
   private void chooseRegions() {
@@ -384,8 +403,10 @@ public final class MainActivity extends Activity {
 
   private void singleMenu(View anchor) {
     PopupMenu menu = new PopupMenu(this, anchor);
-    menu.getMenu().add(0, ManualReclaim.FILES, 0, ManualReclaim.label(ManualReclaim.FILES));
-    menu.getMenu().add(0, ManualReclaim.OBJECTS, 1, ManualReclaim.label(ManualReclaim.OBJECTS));
+    menu.getMenu().add(0, ManualReclaim.FILES, 0, ManualReclaim.label(ManualReclaim.FILES))
+        .setEnabled(LegacyScope.enabled(this, LegacyScope.Scope.FILES));
+    menu.getMenu().add(0, ManualReclaim.OBJECTS, 1, ManualReclaim.label(ManualReclaim.OBJECTS))
+        .setEnabled(LegacyScope.enabled(this, LegacyScope.Scope.OBJECTS));
     menu.setOnMenuItemClickListener(item -> {
       confirmReclaim(item.getItemId(), false);
       return true;
@@ -393,7 +414,30 @@ public final class MainActivity extends Activity {
     menu.show();
   }
 
+  private void scopeDisabled(String detail) {
+    new AlertDialog.Builder(this).setTitle("清理范围已关闭")
+        .setMessage(detail)
+        .setNegativeButton("返回", null)
+        .setPositiveButton("查看开关", (d, w) -> openExtended()).show();
+  }
+
+  private boolean allowed(LegacyScope.Scope scope) {
+    try {
+      LegacyScope.require(this, scope);
+      return true;
+    } catch (IllegalStateException e) {
+      scopeDisabled(e.getMessage());
+      return false;
+    }
+  }
+
   private void confirmReclaim(int mask, boolean alwaysAsk) {
+    try {
+      LegacyScope.requireMemory(this, mask);
+    } catch (IllegalStateException e) {
+      scopeDisabled(e.getMessage());
+      return;
+    }
     if (!alwaysAsk && mask == ManualReclaim.FILES && !ManualReclaim.confirm(this)) {
       reclaim(mask);
       return;
@@ -538,7 +582,7 @@ public final class MainActivity extends Activity {
     add(body, c);
   }
 
-  private void message(String title, String detail) {
+  void message(String title, String detail) {
     new AlertDialog.Builder(this)
         .setTitle(title)
         .setMessage(detail)
@@ -546,7 +590,7 @@ public final class MainActivity extends Activity {
         .show();
   }
 
-  private void resultMessage(String title, String detail) {
+  void resultMessage(String title, String detail) {
     if (AppAppearance.showResults(this)) message(title, detail);
   }
 
@@ -567,6 +611,7 @@ public final class MainActivity extends Activity {
         "正在回收运存",
         () -> {
           MemStats a = MemStats.read(app);
+          LegacyScope.requireMemory(app, selected);
           RamController.reclaim(selected);
           rootVerified = true;
           Thread.sleep(400);
@@ -653,6 +698,7 @@ public final class MainActivity extends Activity {
       return;
     }
     if (config.mode == WatchService.Mode.ROOT_RECLAIM) {
+      if (!allowed(LegacyScope.Scope.FILES)) return;
       work("正在检查监控权限", () -> Root.run("id -u", 20), id -> {
         if (!"0".equals(id)) {
           message("监控未启动", "自动回收需要 Root 授权。也可以选择仅通知提醒。");
@@ -675,6 +721,7 @@ public final class MainActivity extends Activity {
   }
 
   private void chooseProcess() {
+    if (!allowed(LegacyScope.Scope.TRIM)) return;
     work(
         "正在读取缓存进程",
         () -> ProcessTrim.list(getApplicationContext()),
@@ -697,6 +744,7 @@ public final class MainActivity extends Activity {
                     work(
                         "正在请求应用释放运存",
                         () -> {
+                          LegacyScope.require(getApplicationContext(), LegacyScope.Scope.TRIM);
                           String result = ProcessTrim.trim(getApplicationContext(), e);
                           History.add(
                               getApplicationContext(), "应用内存回收请求", e.process + "\n" + result);
@@ -826,6 +874,7 @@ public final class MainActivity extends Activity {
                     .getButton(-1)
                     .setOnClickListener(
                         v -> {
+                          if (!allowed(LegacyScope.Scope.DIAGNOSTICS)) return;
                           List<Diagnostics.Item> selection = new ArrayList<>();
                           long bytes = 0;
                           for (int i = 0; i < chosen.length; i++)
@@ -854,6 +903,7 @@ public final class MainActivity extends Activity {
     work(
         "正在清理选中的诊断文件",
         () -> {
+          LegacyScope.require(getApplicationContext(), LegacyScope.Scope.DIAGNOSTICS);
           Diagnostics.Result result = Diagnostics.remove(selection);
           History.add(getApplicationContext(), "诊断文件清理", diagnosticReport(result));
           return result;
@@ -879,16 +929,18 @@ public final class MainActivity extends Activity {
     return e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
   }
 
-  private interface Done<T> {
+  interface Done<T> {
     void accept(T value);
   }
 
-  private <T> void work(String title, Callable<T> task, Done<T> done) {
+  <T> void work(String title, Callable<T> task, Done<T> done) {
     if (!ACTIVE.compareAndSet(false, true)) {
       toast("请等待当前操作完成");
       return;
     }
     jobName = title;
+    final AlertDialog panel = extendedDialog;
+    if (panel != null && panel.isShowing()) panel.setTitle(title);
     update();
     final Context app = getApplicationContext();
     JOBS.execute(
@@ -910,7 +962,10 @@ public final class MainActivity extends Activity {
             ACTIVE.set(false);
             handler.post(
                 () -> {
-                  if (!isFinishing() && !isDestroyed()) update();
+                  if (!isFinishing() && !isDestroyed()) {
+                    if (panel != null && panel.isShowing()) panel.setTitle(ExtendedReclaimPanel.TITLE);
+                    update();
+                  }
                 });
           }
         });

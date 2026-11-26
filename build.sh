@@ -63,6 +63,26 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 mkdir -- "$stage/generated" "$stage/classes" "$stage/dex"
+ndk_dir=${ANDROID_NDK_HOME:-${ANDROID_NDK_ROOT:-"$sdk_dir/ndk/27.2.12479018"}}
+case $(uname -s) in
+    Darwin) ndk_host=darwin-x86_64 ;;
+    Linux) ndk_host=linux-x86_64 ;;
+    *) die 'the native helper requires the Android NDK host tools for macOS or Linux' ;;
+esac
+clang_bin="$ndk_dir/toolchains/llvm/prebuilt/$ndk_host/bin"
+[[ -x $clang_bin/clang ]] || die 'install Android NDK 27.2.12479018 or set ANDROID_NDK_HOME'
+for abi in arm64-v8a armeabi-v7a x86_64 x86; do
+    case $abi in
+        arm64-v8a) target=aarch64-linux-android ;;
+        armeabi-v7a) target=armv7a-linux-androideabi ;;
+        x86_64) target=x86_64-linux-android ;;
+        x86) target=i686-linux-android ;;
+    esac
+    mkdir -p "$stage/lib/$abi"
+    "$clang_bin/${target}26-clang" -std=c11 -D_GNU_SOURCE -Os -Wall -Wextra -Werror \
+        -fPIE -pie -Wl,-z,max-page-size=16384 -Wl,-z,relro,-z,now -s \
+        "$source_dir/c/ashmem_tool.c" -o "$stage/lib/$abi/libfallenashmem.so"
+done
 "$build_tools/aapt2" compile --dir "$source_dir/res" -o "$stage/resources.zip"
 link_args=(
     -I "$android_jar" --manifest "$source_dir/AndroidManifest.xml"
@@ -99,6 +119,7 @@ fi
 "$build_tools/d8" "--$mode" --min-api "$min_sdk" --lib "$android_jar" \
     --output "$stage/dex" "$stage/classes.jar"
 zip -q -j "$stage/unsigned.apk" "$stage/dex/"*.dex
+(cd "$stage" && zip -q unsigned.apk lib/*/libfallenashmem.so)
 "$build_tools/zipalign" -f 4 "$stage/unsigned.apk" "$stage/aligned.apk"
 
 signing_dir=${FALLEN_LEAVES_SIGNING_DIR:-${PAGETRIM_SIGNING_DIR:-"${XDG_DATA_HOME:-$HOME/.local/share}/pagetrim/signing"}}

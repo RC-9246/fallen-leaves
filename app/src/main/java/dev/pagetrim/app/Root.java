@@ -52,7 +52,8 @@ final class Root {
       String text = new String(out.toByteArray(), StandardCharsets.UTF_8).trim();
       if (process.exitValue() != 0) {
         String detail = text.length() > 220 ? text.substring(0, 220) : text;
-        throw new IOException("系统未完成操作，请检查 Root 授权。" + (detail.isEmpty() ? "" : " " + detail));
+        if (process.exitValue() == 77) throw new IOException("未获得 Root 授权。");
+        throw new IOException(detail.isEmpty() ? "系统未完成操作，请检查 Root 授权。" : "系统未完成操作。 " + detail);
       }
       return text;
     } finally {

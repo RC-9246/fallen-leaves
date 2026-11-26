@@ -53,6 +53,10 @@ public final class ReclaimTile extends TileService {
   }
 
   private void requestReclaim(Context context) {
+    if (!LegacyScope.enabled(context, LegacyScope.Scope.FILES)) {
+      refreshListeningTile();
+      return;
+    }
     if (!ManualReclaim.confirm(context)) {
       startReclaim(context);
       return;
@@ -83,6 +87,7 @@ public final class ReclaimTile extends TileService {
   private static void reclaim(Context app) {
     String before = available(app);
     try {
+      LegacyScope.require(app, LegacyScope.Scope.FILES);
       RamController.reclaim(1);
       History.add(app, "快捷回收页缓存", "可用内存 " + before + " → " + available(app));
     } catch (InterruptedException error) {
@@ -102,10 +107,11 @@ public final class ReclaimTile extends TileService {
     Tile tile = service.getQsTile();
     if (tile == null) return;
     boolean busy = BUSY.get();
-    String status = busy ? "正在回收…" : "可用内存 " + available(service);
+    boolean enabled = LegacyScope.enabled(service, LegacyScope.Scope.FILES);
+    String status = !enabled ? "文件页回收已关闭" : busy ? "正在回收…" : "可用内存 " + available(service);
     tile.setLabel(LABEL);
     tile.setContentDescription(LABEL + "，" + status);
-    tile.setState(busy ? Tile.STATE_UNAVAILABLE : Tile.STATE_INACTIVE);
+    tile.setState((busy || !enabled) ? Tile.STATE_UNAVAILABLE : Tile.STATE_INACTIVE);
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) tile.setSubtitle(status);
     tile.updateTile();
   }

@@ -308,9 +308,14 @@ public final class WatchService extends Service {
         main.post(() -> postAlert(low, detail));
         return;
       }
+      if (!LegacyScope.enabled(WatchService.this, LegacyScope.Scope.FILES)) {
+        History.add(WatchService.this, "自动回收已跳过", "全机干净文件页开关已关闭");
+        return;
+      }
       History.add(WatchService.this, "自动回收尝试", detail);
       try {
         if (inactive()) throw new InterruptedException();
+        LegacyScope.require(WatchService.this, LegacyScope.Scope.FILES);
         RamController.reclaim(1);
         History.add(WatchService.this, "自动回收完成", "文件页缓存回收命令已完成");
       } catch (InterruptedException interrupted) {
