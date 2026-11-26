@@ -19,7 +19,6 @@ final class MemoryTrend extends LinearLayout {
   private static final int LIMIT = (int) (WINDOW / INTERVAL) + 1;
   private static final long MIB = 1L << 20;
   private static final long GIB = 1L << 30;
-  private static final int INK = 0xff17614e, MUTED = 0xff526860, GUIDE = 0xffd9e3db;
 
   private static final class Point {
     final long time, available;
@@ -71,7 +70,7 @@ final class MemoryTrend extends LinearLayout {
     addView(plot, LayoutParams.MATCH_PARENT, dp(70) + Math.round(plot.axis.getTextSize() * 3));
     summary = new TextView(context);
     summary.setTextSize(14);
-    summary.setTextColor(MUTED);
+    summary.setTextColor(context.getColor(R.color.leaf_secondary));
     summary.setPadding(0, dp(4), 0, 0);
     addView(summary, LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT);
     now = SystemClock.elapsedRealtime();
@@ -132,10 +131,13 @@ final class MemoryTrend extends LinearLayout {
   private final class Plot extends View {
     private final Paint axis = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint pen = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final int guideColor, trendColor;
 
     Plot(Context context) {
       super(context);
-      axis.setColor(MUTED);
+      guideColor = context.getColor(R.color.leaf_rule);
+      trendColor = context.getColor(R.color.leaf_accent);
+      axis.setColor(context.getColor(R.color.leaf_secondary));
       axis.setTextSize(TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, 11,
           getResources().getDisplayMetrics()));
       pen.setStrokeCap(Paint.Cap.ROUND);
@@ -154,11 +156,11 @@ final class MemoryTrend extends LinearLayout {
       canvas.drawText(lowLabel, 0, bottom, axis);
       canvas.drawText("2 分钟前", left, getHeight() - axis.descent(), axis);
       canvas.drawText("现在", right - axis.measureText("现在"), getHeight() - axis.descent(), axis);
-      pen.setColor(GUIDE);
+      pen.setColor(guideColor);
       pen.setStrokeWidth(dp(1));
       canvas.drawLine(left, top, right, top, pen);
       canvas.drawLine(left, bottom, right, bottom, pen);
-      pen.setColor(INK);
+      pen.setColor(trendColor);
       pen.setStrokeWidth(dp(2));
       float previousX = 0, previousY = 0;
       boolean hasPrevious = false;

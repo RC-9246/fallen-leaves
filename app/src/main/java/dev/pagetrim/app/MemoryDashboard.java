@@ -1,9 +1,9 @@
 package dev.pagetrim.app;
 
+import android.animation.ArgbEvaluator;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.content.res.ColorStateList;
-import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.RippleDrawable;
@@ -18,9 +18,12 @@ import java.util.Locale;
 /** Foreground memory counters. Reading and scheduling are owned by the activity. */
 final class MemoryDashboard extends LinearLayout {
   private static final int MATCH = LayoutParams.MATCH_PARENT, WRAP = LayoutParams.WRAP_CONTENT;
-  private static final int INK = 0xff152d28, MUTED = 0xff526860, RULE = 0xffd9e3db;
-  private static final int NORMAL = 0xff17614e, HIGH = 0xff855100, VERY_HIGH = 0xffa13636;
   private static final String UNAVAILABLE = "读数暂不可用";
+
+  private final int textColor, secondaryColor, ruleColor;
+  private final int normalColor, warningColor, dangerColor;
+  private final int cacheLowColor, cacheHighColor;
+  private final ArgbEvaluator cacheTint = new ArgbEvaluator();
 
   private final SharedPreferences preferences;
   private final Group physical, swap, cache;
@@ -31,12 +34,20 @@ final class MemoryDashboard extends LinearLayout {
 
   MemoryDashboard(Context context) {
     super(context);
+    textColor = context.getColor(R.color.leaf_text);
+    secondaryColor = context.getColor(R.color.leaf_secondary);
+    ruleColor = context.getColor(R.color.leaf_rule);
+    normalColor = context.getColor(R.color.leaf_accent);
+    warningColor = context.getColor(R.color.leaf_warning);
+    dangerColor = context.getColor(R.color.leaf_danger);
+    cacheLowColor = context.getColor(R.color.leaf_cache_low);
+    cacheHighColor = context.getColor(R.color.leaf_cache_high);
     preferences = context.getSharedPreferences("memory_dashboard", Context.MODE_PRIVATE);
     setOrientation(VERTICAL);
     GradientDrawable surface = new GradientDrawable();
-    surface.setColor(Color.WHITE);
+    surface.setColor(context.getColor(R.color.leaf_surface));
     surface.setCornerRadius(dp(20));
-    surface.setStroke(dp(1), RULE);
+    surface.setStroke(dp(1), ruleColor);
     setBackground(surface);
     setPadding(dp(16), dp(4), dp(16), dp(12));
 
@@ -58,7 +69,7 @@ final class MemoryDashboard extends LinearLayout {
     psi = cache.metric("内存等待时间占比");
     cache.note("占比由文件页缓存（Cached − Shmem）与可回收内核缓存（SReclaimable）之和除以物理内存总量估算。实际可回收量由内核决定。等待时间取近 10 秒至少一个任务因内存受阻的时间占比（PSI some）。");
     divider();
-    TextView legend = label("物理内存与交换空间的已用占比达到 70% 时标为较高，达到 90% 时标为很高。系统缓存占比用蓝色深浅表示。", 12, MUTED);
+    TextView legend = label("物理内存与交换空间的已用占比达到 70% 时标为较高，达到 90% 时标为很高。系统缓存占比用蓝色深浅表示。", 12, secondaryColor);
     legend.setPadding(0, dp(10), 0, 0);
     addView(legend, MATCH, WRAP);
   }
@@ -82,8 +93,8 @@ final class MemoryDashboard extends LinearLayout {
     }
 
     int share = permille(sample.estimatedCache(), sample.total);
-    int cacheColor = share < 0 ? MUTED : Color.rgb(54 - 38 * share / 1000,
-        112 - 55 * share / 1000, 153 - 49 * share / 1000);
+    int cacheColor = share < 0 ? secondaryColor
+        : (Integer) cacheTint.evaluate(share / 1000f, cacheLowColor, cacheHighColor);
     cache.indicator(share < 0 ? "缓存占比暂不可用" : "占物理内存 " + percent(share), share, cacheColor);
     if (cache.expanded()) {
       value(fileCache, sample.cached);
@@ -106,7 +117,7 @@ final class MemoryDashboard extends LinearLayout {
 
   private void divider() {
     View line = new View(getContext());
-    line.setBackgroundColor(RULE);
+    line.setBackgroundColor(ruleColor);
     addView(line, MATCH, dp(1));
   }
 
@@ -142,7 +153,7 @@ final class MemoryDashboard extends LinearLayout {
       header.setGravity(Gravity.CENTER_VERTICAL);
       header.setMinimumHeight(dp(55));
       header.setPadding(0, dp(8), 0, dp(6));
-      header.setBackground(new RippleDrawable(ColorStateList.valueOf(0x193a6d55), null, null));
+      header.setBackground(new RippleDrawable(context.getColorStateList(R.color.leaf_ripple), null, null));
       header.setFocusable(true);
       header.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_YES);
       header.setAccessibilityDelegate(new View.AccessibilityDelegate() {
@@ -154,13 +165,13 @@ final class MemoryDashboard extends LinearLayout {
       LinearLayout titles = new LinearLayout(context);
       titles.setOrientation(VERTICAL);
       titles.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
-      TextView title = label(name, 18, INK);
+      TextView title = label(name, 18, textColor);
       title.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
       titles.addView(title, MATCH, WRAP);
-      summary = label("等待读数", 14, MUTED);
+      summary = label("等待读数", 14, secondaryColor);
       titles.addView(summary, MATCH, WRAP);
       header.addView(titles, new LayoutParams(0, WRAP, 1));
-      toggle = label("", 14, NORMAL);
+      toggle = label("", 14, normalColor);
       toggle.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
       header.addView(toggle, WRAP, WRAP);
       addView(header, MATCH, WRAP);
@@ -168,7 +179,7 @@ final class MemoryDashboard extends LinearLayout {
       meter = new ProgressBar(context, null, android.R.attr.progressBarStyleHorizontal);
       meter.setMax(1000);
       meter.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
-      meter.setProgressBackgroundTintList(ColorStateList.valueOf(RULE));
+      meter.setProgressBackgroundTintList(ColorStateList.valueOf(ruleColor));
       LayoutParams barLayout = new LayoutParams(MATCH, dp(5));
       barLayout.bottomMargin = dp(8);
       addView(meter, barLayout);
@@ -205,16 +216,16 @@ final class MemoryDashboard extends LinearLayout {
       LinearLayout line = new LinearLayout(getContext());
       line.setGravity(Gravity.CENTER_VERTICAL);
       line.setPadding(0, dp(2), 0, dp(2));
-      TextView title = label(name, 14, MUTED);
+      TextView title = label(name, 14, secondaryColor);
       line.addView(title, new LayoutParams(0, WRAP, 1));
-      TextView reading = label("—", 14, INK);
+      TextView reading = label("—", 14, textColor);
       line.addView(reading, WRAP, WRAP);
       details.addView(line, MATCH, WRAP);
       return reading;
     }
 
     void note(String text) {
-      TextView explanation = label(text, 12, MUTED);
+      TextView explanation = label(text, 12, secondaryColor);
       explanation.setPadding(0, dp(6), 0, 0);
       details.addView(explanation, MATCH, WRAP);
     }
@@ -222,11 +233,11 @@ final class MemoryDashboard extends LinearLayout {
     void usage(long used, long total, boolean isSwap) {
       int part = permille(used, total);
       if (part < 0) {
-        indicator(isSwap && total == 0 ? "未启用交换空间" : "使用率暂不可用", -1, MUTED);
+        indicator(isSwap && total == 0 ? "未启用交换空间" : "使用率暂不可用", -1, secondaryColor);
         return;
       }
       String level = part >= 900 ? "很高" : part >= 700 ? "较高" : "常规";
-      int color = part >= 900 ? VERY_HIGH : part >= 700 ? HIGH : NORMAL;
+      int color = part >= 900 ? dangerColor : part >= 700 ? warningColor : normalColor;
       indicator("已用 " + percent(part) + " · " + level, part, color);
     }
 

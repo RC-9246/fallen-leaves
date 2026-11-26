@@ -6,8 +6,6 @@ import android.app.AlertDialog;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
-import android.content.res.ColorStateList;
-import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.RippleDrawable;
@@ -34,15 +32,6 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 public final class MainActivity extends Activity {
-  private static final int BG = 0xfff5f7f4,
-      WHITE = Color.WHITE,
-      TEXT = 0xff152d28,
-      SUB = 0xff526860,
-      GREEN = 0xff17614e,
-      LIGHT = 0xffdff0e6,
-      LINE = 0xffd9e3db,
-      DARK = 0xff153e35,
-      MINT = 0xffb9efd1;
   private static final int MATCH = -1, WRAP = -2;
   private static final String[] TABS = {"运存", "存储", "记录"};
   private static final AtomicBoolean ACTIVE = new AtomicBoolean();
@@ -55,8 +44,11 @@ public final class MainActivity extends Activity {
   private TextView monitorNote, progress, rootButton, runSelection;
   private MemoryDashboard dashboard;
   private AlertDialog watchDialog, manualDialog;
+  private AlertDialog appearanceDialog;
   private WatchConfig pendingMonitor;
   private int confirmMask;
+  private Switch askBeforeReclaim;
+  private CheckBox skipFileConfirmation;
   private MemoryTrend.Samples trendSamples;
   private MemoryTrend trend;
   private boolean returnToRanking, rankByCache = true;
@@ -72,6 +64,12 @@ public final class MainActivity extends Activity {
           handler.postDelayed(this, tab == 0 ? 1000 : 2000);
         }
       };
+
+  @Override
+  protected void attachBaseContext(Context base) {
+    super.attachBaseContext(base);
+    AppAppearance.applyThemeOverride(this, base);
+  }
 
   @Override
   protected void onCreate(Bundle state) {
@@ -92,10 +90,15 @@ public final class MainActivity extends Activity {
     draw();
     if (state == null) {
       handleShortcut(getIntent());
+    } else if (state.containsKey("appearanceDraft")) {
+      appearanceDialog = AppAppearance.show(this, state.getBundle("appearanceDraft"));
     } else if (state.getBundle("watchEditor") != null) {
       openMonitor(state.getBundle("watchEditor"));
     } else if (state.containsKey("confirmMask")) {
       confirmReclaim(state.getInt("confirmMask"), true);
+      if (skipFileConfirmation != null) {
+        skipFileConfirmation.setChecked(state.getBoolean("skipFileConfirmation"));
+      }
     }
   }
 
@@ -149,9 +152,16 @@ public final class MainActivity extends Activity {
     b.putInt("tab", tab);
     b.putBoolean("rankByCache", rankByCache);
     b.putBoolean("returnToRanking", returnToRanking);
+    if (appearanceDialog != null && appearanceDialog.isShowing()) {
+      AppAppearance form = appearanceDialog.findViewById(R.id.appearance_form);
+      b.putBundle("appearanceDraft", form.snapshot());
+    }
     Bundle editor = WatchEditor.saveState(watchDialog);
     if (editor != null) b.putBundle("watchEditor", editor);
-    if (manualDialog != null && manualDialog.isShowing()) b.putInt("confirmMask", confirmMask);
+    if (manualDialog != null && manualDialog.isShowing()) {
+      b.putInt("confirmMask", confirmMask);
+      if (skipFileConfirmation != null) b.putBoolean("skipFileConfirmation", skipFileConfirmation.isChecked());
+    }
     if (pendingMonitor != null) {
       Bundle config = new Bundle();
       config.putBoolean("threshold", pendingMonitor.thresholdEnabled);
@@ -202,43 +212,43 @@ public final class MainActivity extends Activity {
 
   private void line(LinearLayout l) {
     View bar = new View(this);
-    bar.setBackgroundColor(LINE);
+    bar.setBackgroundColor(getColor(R.color.leaf_rule));
     l.addView(bar, MATCH, dp(1));
   }
 
-  private GradientDrawable shape(int bg, int radius, int stroke) {
+  private GradientDrawable shape(int backgroundRes, int radius, int strokeRes) {
     GradientDrawable d = new GradientDrawable();
-    d.setColor(bg);
+    d.setColor(getColor(backgroundRes));
     d.setCornerRadius(dp(radius));
-    if (stroke != 0) d.setStroke(dp(1), stroke);
+    if (strokeRes != 0) d.setStroke(dp(1), getColor(strokeRes));
     return d;
   }
 
-  private TextView text(String s, int size, int color, boolean bold) {
+  private TextView text(String s, int size, int colorRes, boolean bold) {
     TextView t = new TextView(this);
     t.setText(s);
-    t.setTextColor(color);
+    t.setTextColor(getColor(colorRes));
     t.setTextSize(size);
     t.setIncludeFontPadding(false);
     if (bold) t.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
     return t;
   }
 
-  private TextView button(String s, int bg, int fg, View.OnClickListener cb) {
-    TextView t = text(s, 15, fg, true);
+  private TextView button(String s, int backgroundRes, int textRes, View.OnClickListener cb) {
+    TextView t = text(s, 15, textRes, true);
     t.setGravity(Gravity.CENTER);
     pad(t, 12, 8);
     t.setMinHeight(dp(48));
-    t.setBackground(new RippleDrawable(ColorStateList.valueOf(0x33458870), shape(bg, 14, 0), null));
+    t.setBackground(new RippleDrawable(getColorStateList(R.color.leaf_ripple), shape(backgroundRes, 14, 0), null));
     t.setOnClickListener(cb);
     t.setFocusable(true);
     return t;
   }
 
-  private LinearLayout card(int bg) {
+  private LinearLayout card(int backgroundRes) {
     LinearLayout l = column();
     pad(l, 16, 16);
-    l.setBackground(shape(bg, 20, bg == WHITE ? LINE : 0));
+    l.setBackground(shape(backgroundRes, 20, backgroundRes == R.color.leaf_surface ? R.color.leaf_rule : 0));
     return l;
   }
 
@@ -246,24 +256,29 @@ public final class MainActivity extends Activity {
     trend = null;
     dashboard = null;
     runSelection = null;
+    askBeforeReclaim = null;
     monitorNote = null;
     LinearLayout screen = column();
-    screen.setBackgroundColor(BG);
+    screen.setBackgroundColor(getColor(R.color.leaf_background));
     LinearLayout header = row();
     pad(header, 20, 6);
     ImageView icon = new ImageView(this);
     icon.setImageResource(R.drawable.ic_leaf);
     header.addView(icon, dp(27), dp(27));
-    TextView brand = text(getString(R.string.app_name), 20, TEXT, true);
+    TextView brand = text(getString(R.string.app_name), 20, R.color.leaf_text, true);
     pad(brand, 8, 0);
     flex(header, brand);
-    rootButton = button("", LIGHT, GREEN, v -> verifyRoot());
+    rootButton = button("", R.color.leaf_soft, R.color.leaf_accent, v -> verifyRoot());
     header.addView(rootButton);
+    TextView settings = button("设置", R.color.leaf_background, R.color.leaf_accent,
+        v -> appearanceDialog = AppAppearance.show(this, null));
+    header.addView(settings);
     add(screen, header);
-    progress = text("", 13, GREEN, true);
+    progress = text("", 13, R.color.leaf_accent, true);
     pad(progress, 20, 5);
     add(screen, progress);
     ScrollView scroll = new ScrollView(this);
+    scroll.setId(R.id.content_scroll);
     scroll.setFillViewport(false);
     body = column();
     pad(body, 18, 8);
@@ -275,15 +290,15 @@ public final class MainActivity extends Activity {
     gap(body, 14);
     line(screen);
     nav = row();
-    nav.setBackgroundColor(WHITE);
+    nav.setBackgroundColor(getColor(R.color.leaf_surface));
     pad(nav, 12, 4);
     for (int i = 0; i < TABS.length; i++) {
       final int next = i;
       TextView n =
           button(
               TABS[i],
-              i == tab ? LIGHT : WHITE,
-              i == tab ? GREEN : SUB,
+              i == tab ? R.color.leaf_soft : R.color.leaf_surface,
+              i == tab ? R.color.leaf_accent : R.color.leaf_secondary,
               v -> {
                 if (tab != next) {
                   tab = next;
@@ -300,7 +315,7 @@ public final class MainActivity extends Activity {
 
   private void heading(String title) {
     gap(body, 8);
-    add(body, text(title, 27, TEXT, true));
+    add(body, text(title, 27, R.color.leaf_text, true));
     gap(body, 13);
   }
 
@@ -309,34 +324,36 @@ public final class MainActivity extends Activity {
     dashboard = new MemoryDashboard(this);
     add(body, dashboard);
     gap(body, 12);
-    LinearLayout chart = card(WHITE);
-    add(chart, text("可用运存趋势", 18, TEXT, true));
+    LinearLayout chart = card(R.color.leaf_surface);
+    add(chart, text("可用运存趋势", 18, R.color.leaf_text, true));
     trend = new MemoryTrend(this, trendSamples);
     add(chart, trend);
     add(body, chart);
     gap(body, 12);
-    LinearLayout extras = card(WHITE);
+    LinearLayout extras = card(R.color.leaf_surface);
     monitorNote = rowAction(extras, "自动监控", "", v -> openMonitor(null));
     add(body, extras);
     gap(body, 12);
-    LinearLayout tools = card(WHITE);
-    add(tools, text("手动回收 · Root", 18, TEXT, true));
+    LinearLayout tools = card(R.color.leaf_surface);
+    add(tools, text("手动回收 · Root", 18, R.color.leaf_text, true));
     gap(tools, 10);
     LinearLayout commands = row();
-    runSelection = button("", GREEN, WHITE, v -> confirmReclaim(ManualReclaim.selection(this), false));
+    runSelection = button("", R.color.leaf_accent, R.color.leaf_on_accent, v -> confirmReclaim(ManualReclaim.selection(this), false));
     flex(commands, runSelection);
-    TextView single = button("单项 ▾", LIGHT, GREEN, this::singleMenu);
+    TextView single = button("单项 ▾", R.color.leaf_soft, R.color.leaf_accent, this::singleMenu);
     commands.addView(single);
     add(tools, commands);
     updateSelection();
     rowAction(tools, "选择默认组合", "主按钮使用此组合，单项操作只执行一次。", v -> chooseRegions());
-    Switch ask = new Switch(this);
-    ask.setText("手动回收前确认");
-    ask.setMinHeight(dp(48));
-    ask.setChecked(ManualReclaim.confirm(this));
-    ask.setOnCheckedChangeListener((widget, enabled) -> ManualReclaim.setConfirm(this, enabled));
-    add(tools, ask);
-    add(tools, text("涉及内核对象的操作始终提示可能的停顿。", 13, SUB, false));
+    askBeforeReclaim = new Switch(this);
+    askBeforeReclaim.setText("手动回收前确认");
+    askBeforeReclaim.setMinHeight(dp(48));
+    askBeforeReclaim.setChecked(ManualReclaim.confirm(this));
+    askBeforeReclaim.setOnCheckedChangeListener((widget, enabled) -> {
+      if (ManualReclaim.confirm(this) != enabled) ManualReclaim.setConfirm(this, enabled);
+    });
+    add(tools, askBeforeReclaim);
+    add(tools, text("涉及内核对象的操作始终提示可能的停顿。", 13, R.color.leaf_secondary, false));
     line(tools);
     rowAction(tools, "后台应用", "使用 Root 请求指定缓存进程释放运存", v -> chooseProcess());
     add(body, tools);
@@ -383,10 +400,28 @@ public final class MainActivity extends Activity {
     }
     if (manualDialog != null && manualDialog.isShowing()) manualDialog.dismiss();
     confirmMask = mask;
-    manualDialog = new AlertDialog.Builder(this)
+    AlertDialog.Builder builder = new AlertDialog.Builder(this)
         .setTitle(mask == ManualReclaim.FILES ? "确认回收文件页？" : "此次回收可能造成停顿")
         .setMessage("本次范围：" + ManualReclaim.label(mask) + "。\n" + ManualReclaim.caution(mask))
-        .setNegativeButton("取消", null).setPositiveButton("回收", (d, w) -> reclaim(mask)).show();
+        .setNegativeButton("取消", null);
+    skipFileConfirmation = null;
+    if (mask == ManualReclaim.FILES && ManualReclaim.confirm(this)) {
+      LinearLayout options = new LinearLayout(builder.getContext());
+      pad(options, 20, 0);
+      skipFileConfirmation = new CheckBox(builder.getContext());
+      skipFileConfirmation.setText("下次不再询问");
+      skipFileConfirmation.setMinHeight(dp(48));
+      add(options, skipFileConfirmation);
+      builder.setView(options);
+    }
+    final CheckBox skip = skipFileConfirmation;
+    manualDialog = builder.setPositiveButton("回收", (d, w) -> {
+      if (skip != null && skip.isChecked()) {
+        ManualReclaim.setConfirm(this, false);
+        if (askBeforeReclaim != null) askBeforeReclaim.setChecked(false);
+      }
+      reclaim(mask);
+    }).show();
   }
 
   private TextView rowAction(
@@ -395,17 +430,17 @@ public final class MainActivity extends Activity {
     pad(r, 1, 8);
     r.setMinimumHeight(dp(54));
     LinearLayout info = column();
-    add(info, text(title, 16, TEXT, true));
+    add(info, text(title, 16, R.color.leaf_text, true));
     gap(info, 4);
-    TextView note = text(sub, 13, SUB, false);
+    TextView note = text(sub, 13, R.color.leaf_secondary, false);
     add(info, note);
     flex(r, info);
-    TextView arrow = text("›", 23, GREEN, false);
+    TextView arrow = text("›", 23, R.color.leaf_accent, false);
     pad(arrow, 6, 0);
     r.addView(arrow);
     r.setOnClickListener(op);
     r.setFocusable(true);
-    r.setBackground(new RippleDrawable(ColorStateList.valueOf(0x163a6d55), null, null));
+    r.setBackground(new RippleDrawable(getColorStateList(R.color.leaf_ripple), null, null));
     add(parent, r);
     return note;
   }
@@ -447,15 +482,15 @@ public final class MainActivity extends Activity {
   private void storagePage() {
     heading("存储清理");
     StatFs disk = new StatFs(Environment.getDataDirectory().getAbsolutePath());
-    LinearLayout hero = card(DARK);
-    add(hero, text("数据分区可用空间", 14, MINT, true));
+    LinearLayout hero = card(R.color.leaf_hero);
+    add(hero, text("数据分区可用空间", 14, R.color.leaf_hero_label, true));
     gap(hero, 6);
-    add(hero, text(fmt(disk.getAvailableBytes()), 32, WHITE, true));
+    add(hero, text(fmt(disk.getAvailableBytes()), 32, R.color.leaf_hero_value, true));
     gap(hero, 6);
-    add(hero, text("总容量  " + fmt(disk.getTotalBytes()), 13, 0xffc0d9cb, false));
+    add(hero, text("总容量  " + fmt(disk.getTotalBytes()), 13, R.color.leaf_hero_secondary, false));
     add(body, hero);
     gap(body, 12);
-    LinearLayout c = card(WHITE);
+    LinearLayout c = card(R.color.leaf_surface);
     rowAction(c, "应用占用排行", "按缓存或总占用排序，点选应用查看系统存储设置。", v -> showRanking());
     line(c);
     rowAction(c, "应用缓存", "直接选择应用，在系统存储页点“清除缓存”。", v -> chooseApp());
@@ -463,7 +498,7 @@ public final class MainActivity extends Activity {
     rowAction(c, "历史诊断文件 · Root", "扫描满 7 天的崩溃记录、无响应追踪和指定厂商诊断日志。", v -> scanLogs());
     add(body, c);
     gap(body, 14);
-    add(body, text("诊断扫描只访问指定的系统日志目录。下载、照片和聊天目录均不在扫描范围内。", 13, SUB, false));
+    add(body, text("诊断扫描只访问指定的系统日志目录。下载、照片和聊天目录均不在扫描范围内。", 13, R.color.leaf_secondary, false));
   }
 
   private void historyPage() {
@@ -471,14 +506,14 @@ public final class MainActivity extends Activity {
     JSONArray entries = History.list(this);
     shownHistory = entries.toString();
     if (entries.length() == 0) {
-      LinearLayout c = card(WHITE);
-      add(c, text("暂无操作记录", 17, TEXT, true));
+      LinearLayout c = card(R.color.leaf_surface);
+      add(c, text("暂无操作记录", 17, R.color.leaf_text, true));
       gap(c, 6);
-      add(c, text("手动回收、自动提醒或回收、诊断文件清理的记录会保存在本机。", 14, SUB, false));
+      add(c, text("手动回收、自动提醒或回收、诊断文件清理的记录会保存在本机。", 14, R.color.leaf_secondary, false));
       add(body, c);
       return;
     }
-    LinearLayout c = card(WHITE);
+    LinearLayout c = card(R.color.leaf_surface);
     for (int i = 0; i < entries.length(); i++) {
       JSONObject j = entries.optJSONObject(i);
       if (j == null) continue;
@@ -493,12 +528,12 @@ public final class MainActivity extends Activity {
               DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT)
                   .format(new Date(j.optLong("time"))),
               12,
-              SUB,
+              R.color.leaf_secondary,
               false));
       gap(c, 4);
-      add(c, text(j.optString("action"), 16, TEXT, true));
+      add(c, text(j.optString("action"), 16, R.color.leaf_text, true));
       gap(c, 3);
-      add(c, text(j.optString("detail"), 14, SUB, false));
+      add(c, text(j.optString("detail"), 14, R.color.leaf_secondary, false));
     }
     add(body, c);
   }
@@ -509,6 +544,10 @@ public final class MainActivity extends Activity {
         .setMessage(detail)
         .setPositiveButton("完成", null)
         .show();
+  }
+
+  private void resultMessage(String title, String detail) {
+    if (AppAppearance.showResults(this)) message(title, detail);
   }
 
   private void verifyRoot() {
@@ -548,7 +587,7 @@ public final class MainActivity extends Activity {
           History.add(app, "回收" + ManualReclaim.label(selected), result);
           return result;
         },
-        v -> message("回收已执行", v));
+        v -> resultMessage("回收已执行", v));
   }
 
   private void openMonitor(Bundle editorState) {
@@ -663,7 +702,7 @@ public final class MainActivity extends Activity {
                               getApplicationContext(), "应用内存回收请求", e.process + "\n" + result);
                           return result;
                         },
-                        v -> message("系统返回", v));
+                        v -> resultMessage("系统返回", v));
                   })
               .setNegativeButton("取消", null)
               .show();
@@ -815,16 +854,21 @@ public final class MainActivity extends Activity {
     work(
         "正在清理选中的诊断文件",
         () -> {
-          Diagnostics.Result r = Diagnostics.remove(selection);
-          String report =
-              "已删除 " + r.deleted + " 个，原占用 " + fmt(r.bytes) + "。跳过 " + r.skipped + " 个。";
-          History.add(getApplicationContext(), "诊断文件清理", report);
-          return report;
+          Diagnostics.Result result = Diagnostics.remove(selection);
+          History.add(getApplicationContext(), "诊断文件清理", diagnosticReport(result));
+          return result;
         },
-        v -> {
+        result -> {
           draw();
-          message("清理结果", v);
+          String report = diagnosticReport(result);
+          if (result.skipped > 0) message("有诊断文件未清理", report);
+          else resultMessage("清理结果", report);
         });
+  }
+
+  private static String diagnosticReport(Diagnostics.Result result) {
+    return "已删除 " + result.deleted + " 个，原占用 " + fmt(result.bytes)
+        + "。跳过 " + result.skipped + " 个。";
   }
 
   private void toast(String msg) {

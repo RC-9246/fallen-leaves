@@ -1,0 +1,6 @@
+<resources>
+    <style name="LeafPlatform" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+    <style name="LeafDialogPlatform" parent="@android:style/Theme.Material.Dialog.Alert" />
+</resources>

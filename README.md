@@ -1,6 +1,6 @@
 # Fallen Leaves · 落叶
 
-Fallen Leaves is a small, offline Android app for seeing what is using RAM and deciding when to reclaim it. Its native Java interface shows available memory, file cache, reclaimable kernel objects, swap use and memory pressure when the kernel exposes those counters. The interface is in Simplified Chinese.
+Fallen Leaves is a small, offline Android app for seeing what is using RAM and deciding when to reclaim it. Its native Java interface shows available memory, file cache, reclaimable kernel objects, swap use and memory pressure when the kernel exposes those counters. The Simplified Chinese interface uses the system light or dark theme by default, including the dashboard, charts and dialogs.
 
 [Download the signed APK](https://github.com/RC-9246/fallen-leaves/releases/latest) · [简体中文](README.zh-CN.md)
 
@@ -8,12 +8,14 @@ Fallen Leaves is a small, offline Android app for seeing what is using RAM and d
 
 Requires Android 8.0 or newer. Open **运存** to see the dashboard. You can read it and open Android's per-app settings without granting root. Grant access through a compatible root manager, such as KernelSU, only if you want the privileged actions below.
 
+Tap **设置** at the top of any tab to open appearance and prompt settings. Choose System, Light or Dark and tap Save. You can also turn off success dialogs for manual memory reclaim, per-process trim requests and diagnostic cleanup. Results remain in **记录** (History). Errors and partial results still appear.
+
 | Control | What it does | Access |
 | --- | --- | --- |
 | Memory dashboard | Three independently collapsible groups remember their layout. RAM and swap show used, available, total and percentage. The cache section shows estimated file cache, reclaimable slab, their share of total RAM and memory pressure if exposed. RAM and swap change color at 70% and 90%. The blue cache indicator reflects size. | No root |
 | Available RAM trend | Samples every second while the memory page is visible. Shows up to two minutes of local readings, a graph and a text summary. Sampling gaps are visible. | No root |
 | Storage ranking | In **存储 → 应用占用排行**, grant Usage Access in Android settings to rank eligible user apps by cache size or total disk usage. Tap an entry to open system settings. Total includes cache once. Unavailable values are labeled. | No root, optional Usage Access |
-| Memory reclaim | Save a combination of clean file pages and reclaimable filesystem objects for the main button. The single-action menu runs one area without changing the combination. A switch controls confirmation for file pages, including the tile. Operations that include kernel objects always show a pause warning. Results show before and after readings. | Root |
+| Memory reclaim | Save a combination of clean file pages and reclaimable filesystem objects for the main button. The single-action menu runs one area without changing the combination. Select “Do not ask again” and confirm to skip future file-page prompts, including for the tile. The memory tab can turn the prompt back on. Operations that include kernel objects always show a pause warning. Results show before and after readings. | Root |
 | Quick Settings tile | Add **回收文件页** in the system tile editor. Tapping it requests file-page reclaim. | Root |
 | Background apps | Select an eligible cached user process and send a memory-trim request. The app rechecks its identity and cached state before sending. The recipient decides what to release. Android 14 and later may ignore the request. | Root |
 | Automatic monitoring | Independently enable used RAM ≥ 1–99% (preset 90%) and an elapsed interval of 1–1440 minutes (preset 30). Both start off. Choose notification only or explicitly authorize root to reclaim clean file pages. If both are due on the same check there is one action. The ongoing notification can open the editor or stop the service. | No root for alerts, root for reclaim |

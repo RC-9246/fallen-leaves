@@ -1,10 +1,24 @@
 <resources>
-    <style name="AppTheme" parent="@android:style/Theme.Material.Light.NoActionBar">
-        <item name="android:fontFamily">sans</item>
+    <style name="LeafPlatform" parent="@android:style/Theme.Material.Light.NoActionBar">
         <item name="android:windowLightStatusBar">true</item>
-        <item name="android:statusBarColor">#F5F7F4</item>
-        <item name="android:navigationBarColor">#192F2B</item>
-        <item name="android:colorAccent">#146656</item>
-        <item name="android:windowBackground">#F5F7F4</item>
+    </style>
+    <style name="LeafDialogPlatform" parent="@android:style/Theme.Material.Light.Dialog.Alert" />
+
+    <style name="AppTheme" parent="@style/LeafPlatform">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:windowBackground">@color/leaf_background</item>
+        <item name="android:statusBarColor">@color/leaf_background</item>
+        <item name="android:navigationBarColor">@color/leaf_navigation</item>
+        <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:colorAccent">@color/leaf_accent</item>
+        <item name="android:colorBackgroundFloating">@color/leaf_surface</item>
+        <item name="android:alertDialogTheme">@style/LeafDialog</item>
+        <item name="android:forceDarkAllowed">false</item>
+    </style>
+
+    <style name="LeafDialog" parent="@style/LeafDialogPlatform">
+        <item name="android:colorAccent">@color/leaf_accent</item>
+        <item name="android:colorBackgroundFloating">@color/leaf_surface</item>
+        <item name="android:forceDarkAllowed">false</item>
     </style>
 </resources>

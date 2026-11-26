@@ -1,0 +1,4 @@
+<resources>
+    <item name="appearance_form" type="id" />
+    <item name="content_scroll" type="id" />
+</resources>

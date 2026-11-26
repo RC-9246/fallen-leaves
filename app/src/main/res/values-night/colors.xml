@@ -1,0 +1,20 @@
+<resources>
+    <color name="leaf_background">#101915</color>
+    <color name="leaf_surface">#1A2722</color>
+    <color name="leaf_text">#E4EFE9</color>
+    <color name="leaf_secondary">#B3C5BB</color>
+    <color name="leaf_rule">#41554C</color>
+    <color name="leaf_accent">#88D7B2</color>
+    <color name="leaf_on_accent">#0B3024</color>
+    <color name="leaf_soft">#253E33</color>
+    <color name="leaf_warning">#FFCF88</color>
+    <color name="leaf_danger">#FFADAA</color>
+    <color name="leaf_cache_low">#91BDD3</color>
+    <color name="leaf_cache_high">#B9DBFF</color>
+    <color name="leaf_ripple">#3388D7B2</color>
+    <color name="leaf_hero">#203D32</color>
+    <color name="leaf_hero_label">#A8E4BE</color>
+    <color name="leaf_hero_value">#EAF8EF</color>
+    <color name="leaf_hero_secondary">#BBD4C5</color>
+    <color name="leaf_navigation">#101915</color>
+</resources>
