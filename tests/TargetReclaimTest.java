@@ -21,6 +21,21 @@ public final class TargetReclaimTest {
         throw new AssertionError("missing zRAM statistics");
       if (!TargetReclaim.report(2, TargetReclaim.Mode.COLD, "COLD 0 1 0").partial)
         throw new AssertionError("unknown process state");
+      TargetReclaim.Result gc = TargetReclaim.report(2, TargetReclaim.Mode.ART_GC, samples + "GC 1");
+      if (!gc.partial || !gc.text.contains("1/2")) throw new AssertionError(gc.text);
+      TargetReclaim.Result laz = TargetReclaim.report(2, TargetReclaim.Mode.LAZY_FREE, "LAZY 123 0\nLAZY 124 32");
+      if (laz.partial || !laz.text.contains("32768")) throw new AssertionError(laz.text);
+      TargetReclaim.Result range = TargetReclaim.report(2, TargetReclaim.Mode.RANGE_FILE, samples + "RANGE 1048576 2097152\nSTOP changed");
+      if (!range.partial || !range.text.contains("changed") || range.text.contains("粗略净收益"))
+        throw new AssertionError(range.text);
+      TargetReclaim.Result marked = TargetReclaim.report(2, TargetReclaim.Mode.MARK_COLD, samples + "RANGE 1048576 1048576");
+      if (marked.partial || !marked.text.contains("标冷") || marked.text.contains("净收益")) throw new AssertionError(marked.text);
+      try {
+        TargetReclaim.report(1, TargetReclaim.Mode.PAGEOUT, "RANGE 0 1048576\nSTOP ENOSYS");
+        throw new AssertionError("unsupported kernel reported success");
+      } catch (java.io.IOException expected) {
+        if (!expected.getMessage().contains("ENOSYS")) throw expected;
+      }
       return;
     }
     // Constructors are private so production callers can only select targets issued by list().

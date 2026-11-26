@@ -1,7 +1,9 @@
 package dev.pagetrim.app;
 
 import android.content.Context;
+import android.os.Build;
 import android.os.Process;
+import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -13,7 +15,26 @@ import java.util.Set;
 
 /** Manual, package-scoped operations on an explicitly selected cohort of cached processes. */
 final class TargetReclaim {
-  enum Mode { ANON, FILE, COLD }
+  enum Mode { ANON, FILE, COLD, FORCE_STOP, RANGE_ANON, RANGE_FILE, MARK_COLD, PAGEOUT, ART_GC, LAZY_FREE }
+
+  /** Opaque entry from the kernel's smaps. The UI never supplies a pathname or address. */
+  static final class Region {
+    final String label;
+    final long bytes, rssKiB;
+    private final App app;
+    private final Mode mode;
+    private final int pid;
+    private final String token;
+    private final boolean anonymous;
+
+    private Region(App app, Mode mode, int pid, String token, long bytes, long rssKiB,
+        boolean anonymous, String label) {
+      this.app = app; this.mode = mode; this.pid = pid; this.token = token; this.bytes = bytes;
+      this.rssKiB = rssKiB; this.anonymous = anonymous;
+      this.label = label + " · PID " + pid + " · " + (anonymous ? "私有匿名页" : "文件映射")
+          + "\n驻留 " + MainActivity.fmt(Math.multiplyExact(rssKiB, 1024L)) + " / 区域 " + MainActivity.fmt(bytes);
+    }
+  }
 
   static final class Result {
     final String text;
@@ -76,8 +97,8 @@ final class TargetReclaim {
     return result;
   }
 
-  static synchronized Result run(Context context, App app, Mode mode) throws Exception {
-    if (app == null || mode == null || app.uid == Process.myUid()
+  static void validate(Context context, App app) throws Exception {
+    if (app == null || app.uid == Process.myUid()
         || !ProcessTrim.sameApp(context.getPackageManager(), app.pkg, app.uid)) {
       throw new IOException("已选应用或所属用户发生变化，请重新选取。");
     }
@@ -87,6 +108,13 @@ final class TargetReclaim {
       if (app.pkg.equals(entry.pkg)) { eligible = true; break; }
     }
     if (!eligible) throw new IOException("应用已不符合操作条件。");
+  }
+
+  static synchronized Result run(Context context, App app, Mode mode) throws Exception {
+    validate(context, app);
+    if (mode == null || isRange(mode)) throw new IOException("请先选择目标映射。");
+    if (mode == Mode.ART_GC && Build.VERSION.SDK_INT != 30)
+      throw new IOException("仅对 Android 11 的详细诊断路径提供此实验功能。");
     try {
       return report(app.processCount(), mode, Root.run(command(app, mode), 90));
     } catch (IOException e) {
@@ -106,8 +134,8 @@ final class TargetReclaim {
       + "case \"$state\" in *'(CACHED_ACTIVITY)'|*'(CACHED_ACTIVITY_CLIENT)'|*'(CACHED_RECENT)'|*'(CACHED_EMPTY)') return 0;; *) return 1;; esac; }\n"
       + "members() { listing=$(ps -A -o PID,UID) || return 1;\n"
       + "printf '%s\\n' \"$listing\" | awk -v u=\"$uid\" '$2==u && $1~/^[0-9]+$/ && !seen[$1]++ {print $1}'; }\n"
-      + "same_members() { live=$(members) || return 1; n=0; for member in $live; do\n"
-      + "case \" $pids \" in *\" $member \"*) ;; *) return 1;; esac; n=$((n+1)); done; [ \"$n\" -eq \"$count\" ]; }\n"
+      + "same_members() ( live=$(members) || return 1; n=0; for member in $live; do\n"
+      + "case \" $pids \" in *\" $member \"*) ;; *) return 1;; esac; n=$((n+1)); done; [ \"$n\" -eq \"$count\" ]; )\n"
       + "matches_app() { [ \"$(awk '/^Uid:/ {print $2,$3,$4,$5}' status)\" = \"$uid $uid $uid $uid\" ] &&\n"
       + "  [ \"$(tr '\\000' '\\n' < cmdline | head -n 1)\" = \"$name\" ]; }\n"
       + "cached_adj() { IFS= read -r adj < oom_score_adj && [ \"$adj\" -ge 900 ] && [ \"$adj\" -le 999 ]; }\n"
@@ -116,15 +144,23 @@ final class TargetReclaim {
       + "set -- ${st##*) }; [ \"$#\" -ge 20 ] || exit 4; [ \"${20}\" = \"$born\" ] && [ \"$1\" != Z ] || exit 1;\n"
       + "[ \"$action\" = alive ] && exit 0; matches_app || exit 1;\n"
       + "case $action in rss) awk '$1==\"VmRSS:\" && $2~/^[0-9]+$/ && $3==\"kB\" {print $2;ok=1} END{if(!ok)exit 1}' status;;\n"
-      + "check) cached_adj || exit 1; if [ \"$area\" != cold ]; then [ -f reclaim ] && [ ! -L reclaim ] && [ -w reclaim ] || exit 3; fi;;\n"
+      + "check) cached_adj || exit 1; if [ \"$area\" = file ] || [ \"$area\" = anon ]; then [ -f reclaim ] && [ ! -L reclaim ] && [ -w reclaim ] || exit 3; fi;;\n"
+      + "maps) cached_adj && \"$helper\" list \"$kind\";;\n"
+      + "range) cached_adj && \"$helper\" \"$operation\" \"$kind\" \"$pid\" \"$token\" \"$offset\" \"$length\";;\n"
+      + "lazy) cached_adj && awk '$1==\"LazyFree:\" && $2~/^[0-9]+$/ && $3==\"kB\" {total+=$2;found=1} END{if (!found)exit 1; print total}' smaps;;\n"
+      + "gc) cached_adj || exit 1; result=$(dumpsys -t 6 meminfo -d \"$pid\" 2>/dev/null) || exit 1;\n"
+      + "printf '%s\\n' \"$result\" | grep -F \"** MEMINFO in pid $pid [$name] **\" >/dev/null &&\n"
+      + "printf '%s\\n' \"$result\" | grep -Eq '^[[:space:]]*Objects[[:space:]]*$' ;;\n"
       + "reclaim) [ -f reclaim ] && [ ! -L reclaim ] && exec 3>reclaim || exit 1; cached_adj && printf '%s\\n' \"$area\" >&3;; esac )\n"
       + "sum_rss() { total=0; for p in $pids; do kib=$(process \"$p\" rss) || return 1; total=$((total + kib)); done; echo \"$total\"; }\n"
       + "zram_only() { awk 'NR>1 {if($1 !~ /\\/zram[0-9]+$/) bad=1; n++} END{exit (!n || bad)}' /proc/swaps; }\n"
-      + "zstat() ( set +f; total=0; ids=''; for d in /sys/block/zram[0-9]*; do [ -d \"$d\" ] || continue;\n"
+      + "zstat() ( set +f; sizes=''; ids=''; for d in /sys/block/zram[0-9]*; do [ -d \"$d\" ] || continue;\n"
       + "IFS= read -r statline < \"$d/mm_stat\" || exit 1; set -- $statline; case ${3:-x} in ''|*[!0-9]*) exit 1;; esac;\n"
-      + "total=$((total+$3)); ids=\"$ids/${d##*/}\"; done; [ -n \"$ids\" ] && echo \"$ids $total\"; )\n";
+      + "sizes=\"$sizes $3\"; ids=\"$ids/${d##*/}\"; done; [ -n \"$ids\" ] || exit 1; total=$(printf '%s\\n' \"$sizes\" | awk '{for(i=1;i<=NF;i++)n+=$i;printf \"%.0f\",n}') || exit 1; echo \"$ids $total\"; )\n";
 
-  private static String command(App app, Mode mode) {
+  static String validatedPrelude(App app) { return prelude(app, "inspect"); }
+
+  private static String prelude(App app, String area) {
     StringBuilder ids = new StringBuilder();
     StringBuilder identify = new StringBuilder("identify() { case $1 in\n");
     for (ProcessTrim.Entry e : app.processes) {
@@ -137,16 +173,23 @@ final class TargetReclaim {
           .append(e.start).append(";;\n");
     }
     identify.append("*) return 1;; esac; }\n");
-    String area = mode == Mode.ANON ? "anon" : mode == Mode.FILE ? "file" : "cold";
-    String pre = "set -f\nuid=" + app.uid + "\npids='" + ids + "'\ncount=" + app.processCount()
+    return "set -f\nuid=" + app.uid + "\npids='" + ids + "'\ncount=" + app.processCount()
         + "\narea=" + area + "\n" + identify + FUNCTIONS
         + "awk '$2==\"/proc\" && $3==\"proc\" {ok=1} END{exit !ok}' /proc/mounts || exit 1\n"
         + "same_members && cached_uid || stale\n"
         + "for p in $pids; do process \"$p\" check; case $? in 0) ;; 3) echo '目标进程未开放可写的内核回收接口。' >&2; exit 1;; *) stale;; esac; done\n";
-    if (mode == Mode.COLD) {
+  }
+
+  private static String command(App app, Mode mode) {
+    String pre = prelude(app, mode == Mode.ANON ? "anon" : mode == Mode.FILE ? "file" : "inspect");
+    if (mode == Mode.LAZY_FREE)
+      return pre + "for p in $pids; do same_members && cached_uid || break; n=$(process \"$p\" lazy) || continue; echo LAZY \"$p\" \"$n\"; done; :\n";
+    if (mode == Mode.ART_GC)
+      return pre + baseline() + "n=0; for p in $pids; do same_members && cached_uid && process \"$p\" gc || break; n=$((n+1)); done; echo GC \"$n\"\n" + finalReadings();
+    if (mode == Mode.COLD || mode == Mode.FORCE_STOP) {
       return pre + "same_members && cached_uid || stale\n"
           + "for p in $pids; do process \"$p\" check || stale; done\n"
-          + "msg=$(am kill --user " + app.uid / 100000 + " '" + app.pkg + "' 2>&1) || exit 1\n"
+          + "msg=$(am " + (mode == Mode.FORCE_STOP ? "force-stop" : "kill") + " --user " + app.uid / 100000 + " '" + app.pkg + "' 2>&1) || exit 1\n"
           + "case \"$msg\" in *[Ee]rror*|*[Ee]xception*|*'Unknown command'*) echo '系统拒绝结束缓存应用。' >&2; exit 1;; esac\n"
           + "i=0; while :; do alive=0; unknown=0; for p in $pids; do process \"$p\" alive; case $? in 0) alive=$((alive+1));; 1) :;; *) unknown=$((unknown+1));; esac; done;\n"
           + "i=$((i+1)); [ $((alive+unknown)) -gt 0 ] && [ \"$i\" -lt 6 ] || break; sleep 0.2; done\n"
@@ -154,10 +197,90 @@ final class TargetReclaim {
     }
     return pre
         + (mode == Mode.ANON ? "zram_only || { echo '匿名页回收需要已启用且仅使用 zRAM 的交换区。' >&2; exit 1; }\n" : "")
-        + "base=$(sum_rss) || stale; echo BASE \"$base\"; z=$(zstat 2>/dev/null) && echo Z0 $z\n"
+        + baseline()
         + "done_count=0; for p in $pids; do same_members && cached_uid && process \"$p\" reclaim || break; done_count=$((done_count+1)); done\n"
-        + "echo DONE \"$done_count\"; if same_members && after=$(sum_rss); then echo AFTER \"$after\"; fi\n"
+        + "echo DONE \"$done_count\"\n" + finalReadings();
+  }
+
+  private static String baseline() {
+    return "base=$(sum_rss) || stale; echo BASE \"$base\"; z=$(zstat 2>/dev/null) && echo Z0 $z\n";
+  }
+
+  private static String finalReadings() {
+    return "if same_members && after=$(sum_rss); then echo AFTER \"$after\"; fi\n"
         + "z=$(zstat 2>/dev/null) && echo Z1 $z; :\n";
+  }
+
+  static boolean isRange(Mode mode) {
+    return mode == Mode.RANGE_ANON || mode == Mode.RANGE_FILE || mode == Mode.MARK_COLD || mode == Mode.PAGEOUT;
+  }
+
+  private static String kind(Mode mode) throws IOException {
+    if (mode == Mode.RANGE_ANON) return "anon";
+    if (mode == Mode.RANGE_FILE) return "file";
+    if (mode == Mode.MARK_COLD || mode == Mode.PAGEOUT) return "mixed";
+    throw new IOException("此范围不使用映射选择。");
+  }
+
+  private static String regionPrelude(Context context, App app, Mode mode) throws IOException {
+    File helper = new File(context.getApplicationInfo().nativeLibraryDir, "libfallenpages.so");
+    if (!helper.isFile()) throw new IOException("此安装包缺少目标架构的页操作工具。");
+    return validatedPrelude(app) + "helper='" + helper.getAbsolutePath().replace("'", "'\\''") + "'\n"
+        + "kind=" + kind(mode) + "\n"
+        + (mode == Mode.RANGE_ANON || mode == Mode.RANGE_FILE
+            ? "case \"$(uname -r)\" in *Horizon*) ;; *) echo '未识别支持地址区间语法的 Horizon 内核。' >&2; exit 1;; esac\n"
+            : "\"$helper\" probe || exit 1\n");
+  }
+
+  static List<Region> regions(Context context, App app, Mode mode) throws Exception {
+    validate(context, app);
+    String output = Root.run(regionPrelude(context, app, mode)
+        + "for p in $pids; do same_members && cached_uid || stale; rows=$(process \"$p\" maps) || exit 1;\n"
+        + "if [ -n \"$rows\" ]; then printf '%s\\n' \"$rows\" | awk -v p=\"$p\" '{print p,$0}'; fi; done\n", 45);
+    List<Region> result = new ArrayList<>();
+    for (String row : output.split("\n")) {
+      if (row.isEmpty()) continue;
+      String[] f = row.split(" ", 7);
+      if (f.length != 7 || !f[1].equals("MAP") || f[2].length() > 2048
+          || !f[2].matches("[0-9a-f]+") || (!f[5].equals("anon") && !f[5].equals("file")))
+        throw new IOException("不能核对内核映射清单。");
+      int pid = Integer.parseInt(f[0]);
+      long bytes = Long.parseLong(f[3]), rss = Long.parseLong(f[4]);
+      boolean member = false;
+      for (ProcessTrim.Entry entry : app.processes) if (entry.pid == pid) member = true;
+      if (!member || bytes <= 0 || rss < 0 || rss > bytes / 1024) throw new IOException("映射读数无效。");
+      result.add(new Region(app, mode, pid, f[2], bytes, rss, f[5].equals("anon"), f[6]));
+    }
+    result.sort((a,b) -> Long.compare(b.rssKiB, a.rssKiB));
+    return result;
+  }
+
+  static synchronized Result runRange(Context context, App app, Mode mode, Region region, int budgetMiB)
+      throws Exception {
+    validate(context, app);
+    if (region == null || app != region.app || mode != region.mode || budgetMiB < 1 || budgetMiB > 64)
+      throw new IOException("映射或预算已失效。");
+    long limit = Math.min(region.bytes, budgetMiB * 1024L * 1024);
+    String operation = mode == Mode.MARK_COLD ? "mark" : mode == Mode.PAGEOUT ? "pageout" : "range";
+    String command = regionPrelude(context, app, mode) + baseline()
+        + "operation=" + operation + "\ntoken=" + region.token + "\nlimit=" + limit + "\noffset=0\n"
+        + (region.anonymous && mode != Mode.MARK_COLD ? "zram_only || { echo '匿名页换出需要仅使用 zRAM 的交换区。' >&2; exit 1; }\n" : "")
+        + "while [ \"$offset\" -lt \"$limit\" ]; do length=$((limit-offset)); [ \"$length\" -le 4194304 ] || length=4194304;\n"
+        + "if ! same_members || ! cached_uid; then echo 'STOP 进程集合或缓存状态已变化。'; break; fi\n"
+        + "if ! answer=$(process " + region.pid + " range 2>&1); then echo \"STOP ${answer:-进程或映射发生变化。}\"; break; fi\n"
+        + "set -- $answer; [ \"$#\" = 2 ] && [ \"$1\" = ACCEPT ] || { echo 'STOP 未能读取内核回执。'; break; };\n"
+        + "case $2 in ''|*[!0-9]*) echo 'STOP 内核返回无效长度。'; break;; esac\n"
+        + "[ \"$2\" -gt 0 ] && [ \"$2\" -le \"$length\" ] || { echo 'STOP 内核返回无效长度。'; break; };\n"
+        + "offset=$((offset+$2)); [ \"$2\" = \"$length\" ] || { echo 'STOP 内核只接受了部分区间。'; break; }; done\n"
+        + "echo RANGE \"$offset\" \"$limit\"\n" + finalReadings();
+    String output;
+    try { output = Root.run(command, 90); }
+    catch (IOException error) {
+      if (error.getMessage() != null && (error.getMessage().contains("超时") || error.getMessage().contains("未能完整读取")))
+        throw new IOException("未收到完整回执，部分区间可能已经处理。", error);
+      throw error;
+    }
+    return report(app.processCount(), mode, output);
   }
 
   private static String change(long value) {
@@ -171,7 +294,23 @@ final class TargetReclaim {
       fields.put(parts[0], parts);
     }
     try {
-      if (mode == Mode.COLD) {
+      if (mode == Mode.LAZY_FREE) {
+        long total = 0;
+        Set<Integer> seen = new HashSet<>();
+        for (String line : output.split("\n")) {
+          if (!line.startsWith("LAZY ")) continue;
+          String[] row = line.split(" ");
+          int pid = Integer.parseInt(row[1]);
+          long kib = Long.parseLong(row[2]);
+          if (pid <= 0 || kib < 0 || !seen.add(pid)) throw new IllegalArgumentException();
+          total = Math.addExact(total, Math.multiplyExact(kib, 1024L));
+        }
+        if (seen.isEmpty()) throw new IOException("未取得目标进程的 LazyFree 计数。");
+        if (seen.size() > count) throw new IllegalArgumentException();
+        return new Result("已读取 " + seen.size() + "/" + count + " 个缓存进程。LazyFree 合计 "
+            + MainActivity.fmt(total) + "，为应用标记的延迟释放匿名页估计值，实际回收取决于内核。此次仅读取统计。", seen.size() != count);
+      }
+      if (mode == Mode.COLD || mode == Mode.FORCE_STOP) {
         String[] cold = fields.get("COLD");
         int alive = Integer.parseInt(cold[1]);
         int unknown = Integer.parseInt(cold[2]);
@@ -181,14 +320,39 @@ final class TargetReclaim {
         String summary = "原缓存进程已确认退出 " + (count - alive - unknown) + "/" + count + " 个。";
         if (unknown > 0) summary += "另有 " + unknown + " 个进程状态无法核验。";
         summary += current < 0 ? "当前同 UID 进程数不可用。" : "该 UID 当前有 " + current + " 个进程。";
-        return new Result(summary + "系统可能重新拉起应用，应用数据保留。",
+        String lifecycle = mode == Mode.FORCE_STOP
+            ? "已请求系统强行停止此包，通知、闹钟和后台唤醒可能中断，手动打开可再次使用。"
+            : "系统可能重新拉起应用，应用数据保留。";
+        return new Result(summary + lifecycle,
             alive > 0 || unknown > 0 || current != 0);
       }
-      int done = Integer.parseInt(fields.get("DONE")[1]);
-      if (done < 0 || done > count) throw new IllegalArgumentException();
-      if (done == 0) throw new IOException("未执行回收。应用状态已变化或内核拒绝操作，请重新选取。");
-      StringBuilder text = new StringBuilder("内核已受理 ").append(done).append('/').append(count).append(" 个进程的请求。");
-      if (done < count) text.append("其余请求因状态变化或内核拒绝而中止。");
+      boolean incomplete;
+      StringBuilder text = new StringBuilder();
+      if (isRange(mode)) {
+        String[] row = fields.get("RANGE");
+        long accepted = Long.parseLong(row[1]), limit = Long.parseLong(row[2]);
+        if (accepted < 0 || accepted > limit || limit <= 0 || limit > (64L << 20)) throw new IllegalArgumentException();
+        String stop = "";
+        for (String line : output.split("\n")) if (line.startsWith("STOP ")) stop = line.substring(5);
+        if (accepted == 0) throw new IOException("目标区间未获受理。" + stop);
+        incomplete = accepted != limit;
+        text.append("所选区间").append(mode == Mode.MARK_COLD ? "标冷" : "回收")
+            .append("已受理 ").append(MainActivity.fmt(accepted)).append(" / ")
+            .append(MainActivity.fmt(limit)).append("。此长度只表示内核收到的范围。").append(stop);
+      } else if (mode == Mode.ART_GC) {
+        int callbacks = Integer.parseInt(fields.get("GC")[1]);
+        if (callbacks < 0 || callbacks > count) throw new IllegalArgumentException();
+        if (callbacks == 0) throw new IOException("未确认 ART 诊断回执；目标可能已变化或系统不支持，已发起的请求可能产生 GC。");
+        incomplete = callbacks != count;
+        text.append("已确认 ").append(callbacks).append('/').append(count).append(" 个进程返回了目标端详细诊断。Android 11 AOSP 在此路径请求 GC，厂商实现及实际释放量可能不同。");
+      } else {
+        int done = Integer.parseInt(fields.get("DONE")[1]);
+        if (done < 0 || done > count) throw new IllegalArgumentException();
+        if (done == 0) throw new IOException("未执行回收。应用状态已变化或内核拒绝操作，请重新选取。");
+        incomplete = done != count;
+        text.append("内核已受理 ").append(done).append('/').append(count).append(" 个进程的请求。");
+        if (incomplete) text.append("其余请求因状态变化或内核拒绝而中止。");
+      }
       Long saved = null;
       if (fields.containsKey("AFTER")) {
         long before = Math.multiplyExact(Long.parseLong(fields.get("BASE")[1]), 1024L);
@@ -210,11 +374,11 @@ final class TargetReclaim {
         long added = after - before;
         text.append("\n整机 zRAM 物理用量 ").append(MainActivity.fmt(before)).append(" → ").append(MainActivity.fmt(after))
             .append("，增加量 ").append(change(added)).append("。");
-        if (saved != null && done == count && mode == Mode.ANON)
+        if (saved != null && !incomplete && (mode == Mode.ANON || mode == Mode.RANGE_ANON))
           text.append("\n粗略净收益 ").append(change(Math.subtractExact(saved, added))).append("（驻留减少量减去 zRAM 增加量）。");
       }
       return new Result(text.append("\n快照会受同期系统活动影响。多进程 RSS 可能重复计入共享页。").toString(),
-          done != count || saved == null || !measuredZram);
+          incomplete || saved == null || !measuredZram);
     } catch (RuntimeException malformed) {
       throw new IOException("未能核对操作后的完整系统结果。", malformed);
     }

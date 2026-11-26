@@ -65,6 +65,10 @@ final class ExtendedReclaimPanel {
     body.setOrientation(LinearLayout.VERTICAL);
     body.setPadding(dp(20), dp(8), dp(20), dp(12));
     scroll.addView(body);
+    Button advanced = new Button(themed);
+    advanced.setText("高级回收与设备复核");
+    advanced.setOnClickListener(v -> activity.startActivity(new android.content.Intent(activity, ScopeActivity.class)));
+    body.addView(advanced);
     note(body, "下列五项需单独打开，并通过对应按钮执行。");
     heading(body, "保留缓存进程");
     addScope(body, Scope.ANON);

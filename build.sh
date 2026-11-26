@@ -79,9 +79,14 @@ for abi in arm64-v8a armeabi-v7a x86_64 x86; do
         x86) target=i686-linux-android ;;
     esac
     mkdir -p "$stage/lib/$abi"
-    "$clang_bin/${target}26-clang" -std=c11 -D_GNU_SOURCE -Os -Wall -Wextra -Werror \
-        -fPIE -pie -Wl,-z,max-page-size=16384 -Wl,-z,relro,-z,now -s \
-        "$source_dir/c/ashmem_tool.c" -o "$stage/lib/$abi/libfallenashmem.so"
+    cc="$clang_bin/${target}26-clang"
+    flags=(-std=c11 -D_GNU_SOURCE -D_FILE_OFFSET_BITS=64 -Os -Wall -Wextra -Werror
+           -Wl,-z,max-page-size=16384 -Wl,-z,relro,-z,now -s)
+    "$cc" "${flags[@]}" -fPIE -pie "$source_dir/c/ashmem_tool.c" -o "$stage/lib/$abi/libfallenashmem.so"
+    "$cc" "${flags[@]}" -fPIE -pie "$source_dir/c/target_pages.c" -o "$stage/lib/$abi/libfallenpages.so"
+    "$cc" "${flags[@]}" -fPIE -pie "$source_dir/c/root_file.c" -o "$stage/lib/$abi/libfallenrootfile.so"
+    "$cc" "${flags[@]}" -fPIC -shared "$source_dir/c/file_cache.c" -o "$stage/lib/$abi/libfallenfilecache.so"
+    "$cc" "${flags[@]}" -fPIC -shared "$source_dir/c/allocator.c" -ldl -o "$stage/lib/$abi/libfallenallocator.so"
 done
 "$build_tools/aapt2" compile --dir "$source_dir/res" -o "$stage/resources.zip"
 link_args=(
@@ -119,7 +124,7 @@ fi
 "$build_tools/d8" "--$mode" --min-api "$min_sdk" --lib "$android_jar" \
     --output "$stage/dex" "$stage/classes.jar"
 zip -q -j "$stage/unsigned.apk" "$stage/dex/"*.dex
-(cd "$stage" && zip -q unsigned.apk lib/*/libfallenashmem.so)
+(cd "$stage" && zip -q unsigned.apk lib/*/*.so)
 "$build_tools/zipalign" -f 4 "$stage/unsigned.apk" "$stage/aligned.apk"
 
 signing_dir=${FALLEN_LEAVES_SIGNING_DIR:-${PAGETRIM_SIGNING_DIR:-"${XDG_DATA_HOME:-$HOME/.local/share}/pagetrim/signing"}}

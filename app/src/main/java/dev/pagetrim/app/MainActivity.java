@@ -360,7 +360,10 @@ public final class MainActivity extends Activity {
     line(tools);
     rowAction(tools, "后台应用", "通知选定的缓存进程自行释放运存。", v -> chooseProcess());
     line(tools);
-    rowAction(tools, "扩展回收范围", "设置各项开关，按应用回收内存或整理共享池。", v -> openExtended());
+    rowAction(tools, "扩展回收范围", "原有回收开关、按应用回收和压缩池整理。", v -> openExtended());
+    line(tools);
+    rowAction(tools, "高级回收与设备复核", "选文件、分段回收、内核接口和应用协作。",
+        v -> startActivity(new Intent(this, ScopeActivity.class)));
     add(body, tools);
   }
 
