@@ -149,6 +149,7 @@ public final class ScopeActivity extends Activity {
   private boolean working;
   private boolean rootless;
   private int scrollY;
+  private Runnable unregisterBack;
 
   @Override
   protected void attachBaseContext(Context c) {
@@ -187,11 +188,32 @@ public final class ScopeActivity extends Activity {
   @Override
   public void onBackPressed() {
     if (group == null) super.onBackPressed();
-    else {
-      group = null;
-      scrollY = 0;
-      draw();
+    else leaveGroup();
+  }
+
+  private void leaveGroup() {
+    group = null;
+    scrollY = 0;
+    draw();
+  }
+
+  private void updateBackNavigation() {
+    if (android.os.Build.VERSION.SDK_INT < 33) return;
+    if (group != null && unregisterBack == null) {
+      android.window.OnBackInvokedDispatcher dispatcher = getOnBackInvokedDispatcher();
+      android.window.OnBackInvokedCallback callback = this::leaveGroup;
+      dispatcher.registerOnBackInvokedCallback(android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, callback);
+      unregisterBack = () -> dispatcher.unregisterOnBackInvokedCallback(callback);
+    } else if (group == null && unregisterBack != null) {
+      unregisterBack.run();
+      unregisterBack = null;
     }
+  }
+
+  @Override
+  protected void onDestroy() {
+    if (unregisterBack != null) unregisterBack.run();
+    super.onDestroy();
   }
 
   private int dp(int n) {
@@ -216,13 +238,14 @@ public final class ScopeActivity extends Activity {
   }
 
   private void draw() {
+    updateBackNavigation();
     scroll = new ScrollView(this);
     body = new LinearLayout(this);
     body.setOrientation(LinearLayout.VERTICAL);
     body.setPadding(dp(18), dp(14), dp(18), dp(24));
     scroll.addView(body);
-    setContentView(scroll);
-    body.addView(button(group == null ? "返回运存" : "返回功能分类", v -> onBackPressed()));
+    WindowLayout.setContent(this, scroll);
+    body.addView(button(group == null ? "返回运存" : "返回功能分类", v -> { if (group == null) finish(); else leaveGroup(); }));
     body.addView(text(group == null ? (rootless ? "文件页与应用协作 · 免 Root" : "高级回收与设备复核") : group.title, 24, true));
     progress = text("", 14, false);
     body.addView(progress);

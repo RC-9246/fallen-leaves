@@ -82,9 +82,24 @@ Android 11 测试使用普通应用身份和自建文件。确认结束请求后
 
 下载目录、保留的 APK、照片、聊天记录和其他应用的私有数据都不属于诊断清理范围。其他应用的私有磁盘缓存由用户在系统设置中清理。落叶需要读取应用列表来显示可选项目，无联网权限、广告或第三方运行库。最近 30 次操作记录保存在本机。
 
+## Android 版本与显示
+
+1.5.1 使用 Android 17 SDK 37.2 构建，目标 API 37，最低支持 Android 8.0（API 26）。在新版全面屏系统上，四个页面根据系统栏、屏幕开孔和输入法的实际位置安排内容。窄窗口可分行显示标题栏，较矮的横屏窗口支持滚动标题栏。进入高级分类后，系统返回会先回到分类列表。Android 14 起，手动开启的后台监控使用带可停止通知的专用前台服务。[Android 全面屏布局](https://developer.android.com/develop/ui/views/layout/edge-to-edge) · [前台服务类型](https://developer.android.com/develop/background-work/services/fgs/service-types#special-use)
+
+1.5.1 在以下 Android 官方模拟器镜像上完成了实测。
+
+| Android 系统 | 已验证的场景 |
+| --- | --- |
+| 8.0（API 26） | 覆盖升级、三个页签、四个页面、设置和监控弹窗均可正常操作。另在窄横屏、200% 字号下复测。 |
+| 15（API 35） | 冷启动正常，全面屏页面可避让手势导航栏和三键导航栏。窄横屏、200% 字号下，使用停靠或全屏键盘都能看清输入的数字，旋转屏幕后保留尚未保存的监控设置。 |
+| 17 正式版（API 37.2，16 KiB 内存页） | 验证了手机和平板布局、大字号、浅色与深色主题及键盘输入。手动开启监控后，退到后台仍能收到定时通知，也能主动停止监控。从快捷设置磁贴可打开清理确认框。 |
+| Canary 预览版（20261104，16 KiB 内存页） | 验证了监控通知、拒绝通知权限后的处理，以及从快捷设置磁贴打开清理确认框。 |
+
+在两套 16 KiB 系统上，测试应用均以普通权限运行发布版的 arm64 原生组件，对自己的 4 MiB 文件执行回收。驻留文件页从 256 页降至 0 页，文件的 SHA-256 哈希保持一致。原生分配器也接受了归还空闲页的请求，接口未提供实际释放的字节数。
+
 ## 构建和验证
 
-准备 JDK 17、Android SDK Platform 34、Build Tools 34.0.0、Android NDK r27c（27.2.12479018）、Bash、zip 和 OpenSSL。测试还需 Python 3 和本机 C 编译器。请将环境变量 `ANDROID_HOME` 指向 SDK；若 NDK 单独安装，可通过 `ANDROID_NDK_HOME` 指定目录。在项目根目录运行以下命令。
+准备 JDK 17、Android SDK Platform 37.2、Build Tools 37.0.0、Android NDK r27c（27.2.12479018）、Bash、zip 和 OpenSSL。测试还需 Python 3 和本机 C 编译器。请将环境变量 `ANDROID_HOME` 指向 SDK；若 NDK 单独安装，可通过 `ANDROID_NDK_HOME` 指定目录。在项目根目录运行以下命令。
 
 ```sh
 ./tests/test-policy.sh
@@ -95,9 +110,10 @@ python3 tests/test-suspension.py
 python3 tests/test-frames.py
 ./tests/test-pools.sh
 ./build.sh
+python3 tests/test-apk-alignment.py build/Fallen-Leaves.apk
 ```
 
-发布包会生成在 `build/Fallen-Leaves.apk`。调试构建使用 `./build.sh debug`。签名文件保存在源码目录外，通过 `FALLEN_LEAVES_SIGNING_DIR` 可在多次构建时复用自己的签名。公开发行版沿用清页 PageTrim 的包名 `dev.pagetrim.app` 和签名，可以覆盖升级。自行构建的版本需要使用相同密钥才能覆盖已安装的版本。最低 API 26，目标 API 33。
+发布包会生成在 `build/Fallen-Leaves.apk`。调试构建使用 `./build.sh debug`。签名文件保存在源码目录外，通过 `FALLEN_LEAVES_SIGNING_DIR` 可在多次构建时复用自己的签名。公开发行版沿用清页 PageTrim 的包名 `dev.pagetrim.app` 和签名，可以覆盖升级。自行构建的版本需要使用相同密钥才能覆盖已安装的版本。最低 API 26，目标 API 37。
 
 本地测试覆盖目录及文件名限制、文件年龄、硬链接、磁盘占用、空选择和无效回收模式。在 Android 11 模拟器上实测了 1.0.1 覆盖升级、前台运存趋势、仅提醒监控的启停、从授权页返回、两种排序及跳转应用设置。两个测试应用分别写入了不同大小的缓存和普通数据，以验证排序。阈值、冷却时间和模式隔离另使用模拟读数验证。底层功能已在 Android 11 AOSP 模拟器验证，包括三种内核回收模式和选中诊断文件的删除。
 

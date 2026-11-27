@@ -82,9 +82,24 @@ The optional **仅在 Android 报告低内存时自动回收** switch in **自�
 
 Downloads, saved APKs, photos, chats and other apps' private data are outside the diagnostic cleaner's scope. It does not recursively empty app caches. The app requests package visibility to build local app lists. It has no Internet permission, third-party runtime dependencies or ads. The last 30 actions are kept locally.
 
+## Android versions and display
+
+Version 1.5.1 builds with the Android 17 SDK 37.2, targets API 37 and supports Android 8.0 (API 26) and later. On edge-to-edge systems, each screen uses window insets to place controls clear of system bars, cutouts and the keyboard. The toolbar can wrap on narrow screens and scroll in short landscape windows. System Back returns from an advanced category to the category list. On Android 14 and later, user-started monitoring declares the special-use foreground service type with a persistent Stop action. [Android edge-to-edge layouts](https://developer.android.com/develop/ui/views/layout/edge-to-edge) · [Foreground service types](https://developer.android.com/develop/background-work/services/fgs/service-types#special-use)
+
+Version 1.5.1 was tested on these official Android emulator images.
+
+| Android image | Checks that passed |
+| --- | --- |
+| 8.0 (API 26) | In-place upgrade, all three tabs, all four screens, settings and monitor dialogs. Repeated in narrow landscape with 200% text size. |
+| 15 (API 35) | Cold start and edge-to-edge layouts with gesture and three-button navigation. In narrow landscape with 200% text, the entered number stayed visible with both docked and full-screen keyboards. Rotating the screen preserved the unsaved monitor settings. |
+| 17 stable (API 37.2, 16 KiB pages) | Phone and tablet layouts, large text, light and dark themes, and keyboard input. User-started monitoring delivered a scheduled notification in the background and stopped on request. The Quick Settings tile opened the confirmation dialog. |
+| Canary preview (20261104, 16 KiB pages) | Monitor notifications, notification permission denial, and confirmation from the Quick Settings tile. |
+
+On both 16 KiB images, an unprivileged test app ran the release's arm64 native helpers on its own 4 MiB file. Resident file pages fell from 256 to zero and its SHA-256 hash stayed the same. The native allocator accepted the request to return unused pages without providing a byte count.
+
 ## Build and test
 
-Use JDK 17, Android SDK Platform 34, Build Tools 34.0.0, Android NDK r27c (27.2.12479018), Bash, zip and OpenSSL. Set `ANDROID_NDK_HOME` if the NDK is outside the SDK’s `ndk/27.2.12479018` directory. The NDK builds the native helpers for arm64-v8a, armeabi-v7a, x86_64 and x86. For the test suite, export `ANDROID_HOME` to your SDK directory and install Python 3 and a host C compiler. Run from the project root:
+Use JDK 17, Android SDK Platform 37.2, Build Tools 37.0.0, Android NDK r27c (27.2.12479018), Bash, zip and OpenSSL. Set `ANDROID_NDK_HOME` if the NDK is outside the SDK’s `ndk/27.2.12479018` directory. The NDK builds the native helpers for arm64-v8a, armeabi-v7a, x86_64 and x86. For the test suite, export `ANDROID_HOME` to your SDK directory and install Python 3 and a host C compiler. Run from the project root:
 
 ```sh
 ./tests/test-policy.sh
@@ -95,9 +110,10 @@ python3 tests/test-suspension.py
 python3 tests/test-frames.py
 ./tests/test-pools.sh
 ./build.sh
+python3 tests/test-apk-alignment.py build/Fallen-Leaves.apk
 ```
 
-The release build produces `build/Fallen-Leaves.apk`. Use `./build.sh debug` for a debug build. The script keeps signing material outside the project. Set `FALLEN_LEAVES_SIGNING_DIR` to reuse your own signing identity across builds. Published builds retain PageTrim's application ID, `dev.pagetrim.app`, and signing identity for in-place upgrades. An independent build needs the matching key to update an existing installation. Minimum SDK 26, target SDK 33.
+The release build produces `build/Fallen-Leaves.apk`. Use `./build.sh debug` for a debug build. The script keeps signing material outside the project. Set `FALLEN_LEAVES_SIGNING_DIR` to reuse your own signing identity across builds. Published builds retain PageTrim's application ID, `dev.pagetrim.app`, and signing identity for in-place upgrades. An independent build needs the matching key to update an existing installation. Minimum SDK 26, target SDK 37.
 
 The policy tests cover path and filename limits, age, link count, disk block accounting, empty selection and invalid reclaim modes. The 1.0.1 to 1.1.0 upgrade, foreground memory trend, notification-only monitor start/stop, usage-access round trip, both ranking orders and app settings navigation were exercised on an Android 11 emulator. Two test apps had different data and cache footprints. Alert thresholds, cooldown and mode isolation were also checked with simulated readings. The underlying controls were also exercised on an Android 11 AOSP emulator, including all three kernel modes and selected diagnostic-file deletion.
 

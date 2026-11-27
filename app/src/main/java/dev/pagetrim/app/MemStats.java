@@ -2,6 +2,7 @@ package dev.pagetrim.app;
 
 import android.app.ActivityManager;
 import android.content.Context;
+import android.os.SystemClock;
 import java.io.BufferedReader;
 import java.io.FileReader;
 import java.io.IOException;
@@ -10,6 +11,8 @@ import java.util.Map;
 
 /** A single sample. Sizes are bytes; -1 means the counter was unavailable. */
 public final class MemStats {
+  private static final long RETRY_PROC_MS = 60_000;
+  private static volatile long nextMeminfoRead, nextPressureRead;
   public final long total;
   public final long available;
 
@@ -53,27 +56,37 @@ public final class MemStats {
 
   public static MemStats read(Context context) {
     Map<String, Long> values = new HashMap<>(8);
-    try (BufferedReader reader = new BufferedReader(new FileReader("/proc/meminfo"))) {
-      readMeminfo(reader, values);
-    } catch (IOException | SecurityException ignored) {
-      // Android's memory service can still supply total and available RAM.
+    long now = SystemClock.elapsedRealtime();
+    if (now >= nextMeminfoRead) {
+      try (BufferedReader reader = new BufferedReader(new FileReader("/proc/meminfo"))) {
+        readMeminfo(reader, values);
+      } catch (IOException | SecurityException ignored) {
+        nextMeminfoRead = now + RETRY_PROC_MS;
+      }
     }
     long total = values.getOrDefault("MemTotal", -1L);
     long available = values.getOrDefault("MemAvailable", -1L);
     if (total <= 0 || available < 0) {
-      ActivityManager manager = context.getSystemService(ActivityManager.class);
-      if (manager != null) {
-        ActivityManager.MemoryInfo info = new ActivityManager.MemoryInfo();
-        manager.getMemoryInfo(info);
-        if (total <= 0 && info.totalMem > 0) total = info.totalMem;
-        if (available < 0 && info.availMem >= 0) available = info.availMem;
+      try {
+        ActivityManager manager = context.getSystemService(ActivityManager.class);
+        if (manager != null) {
+          ActivityManager.MemoryInfo info = new ActivityManager.MemoryInfo();
+          manager.getMemoryInfo(info);
+          if (total <= 0 && info.totalMem > 0) total = info.totalMem;
+          if (available < 0 && info.availMem >= 0) available = info.availMem;
+        }
+      } catch (RuntimeException unavailable) {
+        // Keep the partial sample if both procfs access and the system service are unavailable.
       }
     }
     double pressure = -1;
-    try (BufferedReader reader = new BufferedReader(new FileReader("/proc/pressure/memory"))) {
-      pressure = readPressure(reader);
-    } catch (IOException | SecurityException ignored) {
-      // An older kernel or its access policy may omit PSI.
+    if (now >= nextPressureRead) {
+      try (BufferedReader reader = new BufferedReader(new FileReader("/proc/pressure/memory"))) {
+        pressure = readPressure(reader);
+      } catch (IOException | SecurityException ignored) {
+        // Avoid one failed open and SELinux audit per dashboard refresh on restricted kernels.
+        nextPressureRead = now + RETRY_PROC_MS;
+      }
     }
     return new MemStats(values, total, available, pressure);
   }

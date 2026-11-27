@@ -52,6 +52,7 @@ public final class WatchEditor {
       label.setLabelFor(value.getId());
       value.setInputType(InputType.TYPE_CLASS_NUMBER);
       value.setSingleLine(true);
+      value.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_DONE);
       parent.addView(value);
     }
 
@@ -237,11 +238,20 @@ public final class WatchEditor {
   }
 
   static AlertDialog show(Activity activity, Callback callback, Bundle draft, WatchConfig pending) {
+    boolean shortWindow = activity.getResources().getConfiguration().screenHeightDp < 480;
     Form form = new Form(activity, pending == null ? WatchConfig.load(activity) : pending, draft);
     ScrollView scroll = new ScrollView(activity);
+    if (shortWindow) {
+      // A fixed title can take the entire visible area when a landscape keyboard is open.
+      TextView title = new TextView(activity);
+      title.setText("监控设置");
+      title.setTextSize(20);
+      title.setTextColor(activity.getColor(R.color.leaf_text));
+      form.addView(title, 0);
+    }
     scroll.addView(form);
     AlertDialog.Builder builder = new AlertDialog.Builder(activity)
-        .setTitle("监控设置")
+        .setTitle(shortWindow ? null : "监控设置")
         .setView(scroll)
         .setPositiveButton("保存", null)
         .setNegativeButton("取消", null);
@@ -274,7 +284,55 @@ public final class WatchEditor {
         }
       });
     });
+    android.view.Window window = dialog.getWindow();
+    window.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
     dialog.show();
+    if (Build.VERSION.SDK_INT >= 35) {
+      // The alert layout reserves space for the entire actions panel, even if its inner
+      // button row is hidden. Locate the outer panel shared by all dialog buttons.
+      View panel = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
+      while (panel.getParent() instanceof View) {
+        View parent = (View) panel.getParent();
+        if (parent.findViewWithTag(FORM_TAG) != null) break;
+        panel = parent;
+      }
+      final View actions = panel;
+      // The frame of a floating platform dialog can extend below a docked keyboard.
+      View decor = window.getDecorView();
+      decor.getViewTreeObserver().addOnGlobalLayoutListener(() -> {
+        android.view.WindowInsets insets = decor.getRootWindowInsets();
+        if (insets == null) return;
+        android.view.WindowManager.LayoutParams frame = window.getAttributes();
+        boolean editing = insets.isVisible(android.view.WindowInsets.Type.ime());
+        int height = android.view.WindowManager.LayoutParams.WRAP_CONTENT;
+        int gravity = android.view.Gravity.CENTER;
+        if (editing) {
+          android.graphics.Rect visible = new android.graphics.Rect();
+          decor.getWindowVisibleDisplayFrame(visible);
+          if (visible.height() <= 0) return;
+          height = visible.height();
+          gravity = android.view.Gravity.TOP | android.view.Gravity.CENTER_HORIZONTAL;
+        }
+        // When only a text line fits above a docked keyboard, its Done key or Back
+        // ends editing. Restore the dialog actions once the keyboard closes.
+        boolean inputOnly = editing && height < 160 * decor.getResources().getDisplayMetrics().density;
+        int visibility = inputOnly ? View.GONE : View.VISIBLE;
+        if (actions.getVisibility() != visibility) {
+          actions.setVisibility(visibility);
+          if (inputOnly) {
+            View focus = form.findFocus();
+            if (focus != null) focus.post(() ->
+                focus.requestRectangleOnScreen(new android.graphics.Rect(0, 0,
+                    focus.getWidth(), focus.getHeight()), true));
+          }
+        }
+        if (frame.height != height || frame.gravity != gravity) {
+          frame.height = height;
+          frame.gravity = gravity;
+          window.setAttributes(frame);
+        }
+      });
+    }
     return dialog;
   }
 

@@ -43,7 +43,17 @@ public final class AppReviewActivity extends Activity {
     int pad = Math.round(getResources().getDisplayMetrics().density * 16);
     body.setPadding(pad, pad, pad, pad);
     scroll.addView(body);
-    setContentView(scroll);
+    WindowLayout.setContent(this, scroll);
+    Button back = new Button(this);
+    back.setText("返回运存");
+    back.setOnClickListener(v -> finish());
+    body.addView(back);
+    TextView title = new TextView(this);
+    title.setText(getTitle());
+    title.setTextSize(24);
+    title.setTextColor(getColor(R.color.leaf_text));
+    title.setTypeface(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD);
+    body.addView(title);
     control(AppReview.REVIEW, "使用与存储对照", "比较最近 90 天的应用使用记录和缓存占用。从系统应用信息返回后可查看缓存变化。",
         "查看使用与缓存", true, this::review);
     boolean supported = Build.VERSION.SDK_INT < 34;

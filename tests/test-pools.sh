@@ -31,10 +31,10 @@ echo 'ashmem probe and purge driver cases passed'
 sdk=
 for candidate in "${ANDROID_HOME:-}" "${ANDROID_SDK_ROOT:-}" "$HOME/Library/Android/sdk" \
     "$HOME/Android/Sdk" /opt/homebrew/share/android-commandlinetools /opt/homebrew/share/android-sdk; do
-    if [[ -f "$candidate/platforms/android-34/android.jar" ]]; then sdk=$candidate; break; fi
+    if [[ -f "$candidate/platforms/android-37.2/android.jar" ]]; then sdk=$candidate; break; fi
 done
-[[ -n $sdk ]] || { echo 'Set ANDROID_HOME to an SDK with platform 34' >&2; exit 1; }
-jar="$sdk/platforms/android-34/android.jar"
+[[ -n $sdk ]] || { echo 'Set ANDROID_HOME to an SDK with platform 37.2' >&2; exit 1; }
+jar="$sdk/platforms/android-37.2/android.jar"
 cat > "$tmp/MainActivity.java" <<'JAVA'
 package dev.pagetrim.app;
 class MainActivity { static String fmt(long value) { return value + " B"; } }

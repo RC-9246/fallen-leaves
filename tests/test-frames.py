@@ -8,7 +8,7 @@ import tempfile
 tests = Path(__file__).resolve().parent
 src = tests.parent / "app/src/main/java/dev/pagetrim/app"
 sdk = Path(os.environ.get("ANDROID_HOME") or os.environ["ANDROID_SDK_ROOT"])
-android = sdk / "platforms/android-34/android.jar"
+android = sdk / "platforms/android-37.2/android.jar"
 
 with tempfile.TemporaryDirectory() as directory:
     work = Path(directory)

@@ -173,7 +173,7 @@ public final class StorageReviewActivity extends Activity {
     body.setOrientation(LinearLayout.VERTICAL);
     body.setPadding(dp(18), dp(14), dp(18), dp(20));
     scroll.addView(body);
-    setContentView(scroll);
+    WindowLayout.setContent(this, scroll);
     button("返回存储", this::finish, true);
     label("所选文件夹清理", 24, true);
     label("选择本机共享存储文件夹查看占用。可逐项清理 cache、caches、.cache、temp、tmp 目录中满 7 天的指定文件。", 15, false);

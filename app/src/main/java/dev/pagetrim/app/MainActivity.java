@@ -47,7 +47,7 @@ public final class MainActivity extends Activity {
   private TextView monitorNote, progress, rootButton, runSelection;
   private MemoryDashboard dashboard;
   private AlertDialog watchDialog, manualDialog;
-  private AlertDialog appearanceDialog, extendedDialog;
+  private AlertDialog appearanceDialog, extendedDialog, inspectionDialog;
   private WatchConfig pendingMonitor;
   private long monitorRequest;
   private boolean permissionInFlight, monitorRootReady;
@@ -106,6 +106,8 @@ public final class MainActivity extends Activity {
       appearanceDialog = AppAppearance.show(this, state.getBundle("appearanceDraft"));
     } else if (state.getBoolean("extendedDialog")) {
       openExtended();
+    } else if (state.getBoolean("inspectionDialog")) {
+      inspectionDialog = MemoryInspection.show(this);
     } else if (state.getBundle("watchEditor") != null) {
       openMonitor(state.getBundle("watchEditor"));
     } else if (state.containsKey("confirmMask")) {
@@ -164,6 +166,10 @@ public final class MainActivity extends Activity {
   @Override
   protected void onDestroy() {
     clearMonitorRequest();
+    for (AlertDialog dialog : new AlertDialog[] {
+        watchDialog, manualDialog, appearanceDialog, extendedDialog, inspectionDialog}) {
+      if (dialog != null && dialog.isShowing()) dialog.dismiss();
+    }
     super.onDestroy();
   }
 
@@ -178,6 +184,7 @@ public final class MainActivity extends Activity {
       b.putBundle("appearanceDraft", form.snapshot());
     }
     b.putBoolean("extendedDialog", extendedDialog != null && extendedDialog.isShowing());
+    b.putBoolean("inspectionDialog", inspectionDialog != null && inspectionDialog.isShowing());
     Bundle editor = WatchEditor.saveState(watchDialog);
     if (editor != null) b.putBundle("watchEditor", editor);
     if (manualDialog != null && manualDialog.isShowing()) {
@@ -296,20 +303,46 @@ public final class MainActivity extends Activity {
     pad(brand, 8, 0);
     flex(header, brand);
     rootButton = button("", R.color.leaf_soft, R.color.leaf_accent, v -> verifyRoot());
-    header.addView(rootButton);
+
     TextView settings = button("设置", R.color.leaf_background, R.color.leaf_accent,
         v -> appearanceDialog = AppAppearance.show(this, null));
-    header.addView(settings);
-    add(screen, header);
+    float minimumHeaderWidth = dp(40 + 27 + 16 + 48)
+        + brand.getPaint().measureText(brand.getText().toString())
+        + rootButton.getPaint().measureText("Root 已验证") + settings.getPaint().measureText("设置");
+    float windowWidth = getResources().getConfiguration().screenWidthDp
+        * getResources().getDisplayMetrics().density;
+    LinearLayout toolbar = header;
+    if (windowWidth < minimumHeaderWidth) {
+      toolbar = column();
+      add(toolbar, header);
+      LinearLayout actions = row();
+      pad(actions, 12, 0);
+      flex(actions, rootButton);
+      flex(actions, settings);
+      add(toolbar, actions);
+    } else {
+      header.addView(rootButton);
+      header.addView(settings);
+    }
+    boolean shortWindow = getResources().getConfiguration().screenHeightDp < 400;
+    if (!shortWindow) add(screen, toolbar);
     progress = text("", 13, R.color.leaf_accent, true);
     pad(progress, 20, 5);
-    add(screen, progress);
+    if (!shortWindow) add(screen, progress);
     ScrollView scroll = new ScrollView(this);
     scroll.setId(R.id.content_scroll);
     scroll.setFillViewport(false);
     body = column();
     pad(body, 18, 8);
-    scroll.addView(body);
+    if (shortWindow) {
+      LinearLayout content = column();
+      add(content, toolbar);
+      add(content, progress);
+      add(content, body);
+      scroll.addView(content);
+    } else {
+      scroll.addView(body);
+    }
     screen.addView(scroll, new LinearLayout.LayoutParams(MATCH, 0, 1));
     if (tab == 0) memoryPage();
     else if (tab == 1) storagePage();
@@ -336,7 +369,7 @@ public final class MainActivity extends Activity {
       flex(nav, n);
     }
     add(screen, nav);
-    setContentView(screen);
+    WindowLayout.setContent(this, screen);
     update();
   }
 
@@ -360,7 +393,8 @@ public final class MainActivity extends Activity {
     LinearLayout extras = card(R.color.leaf_surface);
     monitorNote = rowAction(extras, "自动监控", "", v -> openMonitor(null));
     line(extras);
-    rowAction(extras, "免 Root 运存诊断", "查看低内存阈值、换页和内存压力，比较操作前后。", v -> MemoryInspection.show(this));
+    rowAction(extras, "免 Root 运存诊断", "查看低内存阈值、换页和内存压力，比较操作前后。",
+        v -> inspectionDialog = MemoryInspection.show(this));
     line(extras);
     rowAction(extras, "应用使用与后台管理", "按近期使用记录筛选应用，管理选定应用的后台进程。", v -> startActivity(new Intent(this, AppReviewActivity.class)));
     line(extras);

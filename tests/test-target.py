@@ -8,7 +8,7 @@ import tempfile
 TESTS = Path(__file__).resolve().parent
 SRC = TESTS.parent / 'app/src/main/java/dev/pagetrim/app'
 SDK = Path(os.environ.get('ANDROID_HOME') or os.environ['ANDROID_SDK_ROOT'])
-ANDROID_JAR = SDK / 'platforms/android-34/android.jar'
+ANDROID_JAR = SDK / 'platforms/android-37.2/android.jar'
 
 
 def stub(folder, name, body):

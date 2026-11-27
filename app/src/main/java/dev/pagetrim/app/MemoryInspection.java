@@ -32,8 +32,10 @@ final class MemoryInspection {
   private final EnumMap<Section, Switch> switches = new EnumMap<>(Section.class);
   private final SharedPreferences preferences;
 
-  static void show(Activity activity) {
-    new MemoryInspection(activity).open();
+  static AlertDialog show(Activity activity) {
+    MemoryInspection inspection = new MemoryInspection(activity);
+    inspection.open();
+    return inspection.dialog;
   }
 
   private MemoryInspection(Activity activity) {
@@ -128,7 +130,7 @@ final class MemoryInspection {
       StringBuilder result = new StringBuilder("落叶最近的进程退出记录");
       for (ApplicationExitInfo record : records) {
         result.append("\n").append(time.format(new Date(record.getTimestamp()))).append("　")
-            .append(reason(record.getReason()));
+            .append(reason(record));
         if (record.getReason() == ApplicationExitInfo.REASON_SIGNALED) result.append(" ").append(record.getStatus());
         long pss = record.getPss();
         if (pss > 0 && pss <= Long.MAX_VALUE / 1024)
@@ -140,8 +142,8 @@ final class MemoryInspection {
       return result.toString();
     }
 
-    private static String reason(int reason) {
-      switch (reason) {
+    private static String reason(ApplicationExitInfo record) {
+      switch (record.getReason()) {
         case ApplicationExitInfo.REASON_LOW_MEMORY: return "系统低内存终止";
         case ApplicationExitInfo.REASON_SIGNALED: return "收到信号";
         case ApplicationExitInfo.REASON_EXIT_SELF: return "进程自行退出";
@@ -157,8 +159,14 @@ final class MemoryInspection {
         case ApplicationExitInfo.REASON_FREEZER: return "Android 冻结器终止进程";
         case ApplicationExitInfo.REASON_PACKAGE_UPDATED: return "应用已更新";
         case ApplicationExitInfo.REASON_PACKAGE_STATE_CHANGE: return "应用状态已变更";
-        case ApplicationExitInfo.REASON_OTHER: return "系统报告其他原因";
-        default: return "系统未识别的原因（" + reason + "）";
+        case ApplicationExitInfo.REASON_MEMORY_LIMITER: return "超过系统分配的进程内存上限";
+        case ApplicationExitInfo.REASON_ANOMALY: return "系统检测到应用异常行为";
+        case ApplicationExitInfo.REASON_OTHER:
+          String detail = record.getDescription();
+          // Android 17 originally reported per-process limit hits through REASON_OTHER.
+          return detail != null && detail.contains("MemoryLimiter:AnonSwap")
+              ? "超过系统分配的进程内存上限" : "系统报告其他原因";
+        default: return "系统未识别的原因（" + record.getReason() + "）";
       }
     }
   }

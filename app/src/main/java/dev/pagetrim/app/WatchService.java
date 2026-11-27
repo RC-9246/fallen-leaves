@@ -11,6 +11,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.content.pm.ServiceInfo;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
@@ -196,7 +197,12 @@ public final class WatchService extends Service {
         throw new IllegalArgumentException("监控请求无效。");
       }
       if (!config.hasTriggers()) throw new IllegalArgumentException("没有启用的触发条件");
-      startForeground(NOTIFICATION_ID, createNotification(config));
+      Notification notification = createNotification(config);
+      if (Build.VERSION.SDK_INT >= 34) {
+        startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
+      } else {
+        startForeground(NOTIFICATION_ID, notification);
+      }
       if (!notificationsEnabled(this, config.mode))
         throw new IllegalStateException("系统通知或监控通知类别已关闭。");
       synchronized (ATTEMPT_LOCK) {

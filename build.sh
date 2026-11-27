@@ -19,16 +19,16 @@ sdk_dir=
 for candidate in "${ANDROID_HOME:-}" "${ANDROID_SDK_ROOT:-}" \
     "$HOME/Library/Android/sdk" "$HOME/Android/Sdk" \
     /opt/homebrew/share/android-commandlinetools /opt/homebrew/share/android-sdk; do
-    if [[ -n $candidate && -f $candidate/platforms/android-34/android.jar && \
-        -x $candidate/build-tools/34.0.0/aapt2 ]]; then
+    if [[ -n $candidate && -f $candidate/platforms/android-37.2/android.jar && \
+        -x $candidate/build-tools/37.0.0/aapt2 ]]; then
         sdk_dir=$candidate
         break
     fi
 done
-[[ -n $sdk_dir ]] || die 'set ANDROID_HOME to an SDK with platform android-34 and build-tools 34.0.0'
+[[ -n $sdk_dir ]] || die 'set ANDROID_HOME to an SDK with platform android-37.2 and build-tools 37.0.0'
 
-android_jar="$sdk_dir/platforms/android-34/android.jar"
-build_tools="$sdk_dir/build-tools/34.0.0"
+android_jar="$sdk_dir/platforms/android-37.2/android.jar"
+build_tools="$sdk_dir/build-tools/37.0.0"
 lambda_stubs="$build_tools/core-lambda-stubs.jar"
 for tool in aapt2 d8 zipalign apksigner; do
     [[ -x $build_tools/$tool ]] || die "missing $build_tools/$tool"
@@ -92,7 +92,6 @@ done
 link_args=(
     -I "$android_jar" --manifest "$source_dir/AndroidManifest.xml"
     --java "$stage/generated" -o "$stage/unsigned.apk"
-    --min-sdk-version 26 --target-sdk-version 33
 )
 if [[ $mode == debug ]]; then
     link_args+=(--debug-mode)
@@ -104,7 +103,7 @@ fi
 
 badging=$("$build_tools/aapt2" dump badging "$stage/unsigned.apk")
 [[ $badging == "package: name='dev.pagetrim.app'"* ]] || die 'expected manifest package dev.pagetrim.app'
-min_sdk=$(printf '%s\n' "$badging" | sed -n "s/^sdkVersion:'\([0-9][0-9]*\)'$/\1/p")
+min_sdk=$(printf '%s\n' "$badging" | sed -n "s/^minSdkVersion:'\([0-9][0-9]*\)'$/\1/p")
 [[ -n $min_sdk ]] || die 'unable to read the minimum SDK from the linked manifest'
 
 find "$source_dir/java" "$stage/generated" -type f -name '*.java' -print0 > "$stage/sources"
@@ -125,7 +124,7 @@ fi
     --output "$stage/dex" "$stage/classes.jar"
 zip -q -j "$stage/unsigned.apk" "$stage/dex/"*.dex
 (cd "$stage" && zip -q unsigned.apk lib/*/*.so)
-"$build_tools/zipalign" -f 4 "$stage/unsigned.apk" "$stage/aligned.apk"
+"$build_tools/zipalign" -P 16 -f 4 "$stage/unsigned.apk" "$stage/aligned.apk"
 
 signing_dir=${FALLEN_LEAVES_SIGNING_DIR:-${PAGETRIM_SIGNING_DIR:-"${XDG_DATA_HOME:-$HOME/.local/share}/pagetrim/signing"}}
 (umask 077 && mkdir -p -- "$signing_dir")
@@ -164,7 +163,7 @@ fi
     --ks-pass "file:$password" --debuggable-apk-permitted "$debuggable" \
     --v4-signing-enabled false --out "$stage/signed.apk" "$stage/aligned.apk"
 "$build_tools/apksigner" verify "$stage/signed.apk"
-"$build_tools/zipalign" -c 4 "$stage/signed.apk"
+"$build_tools/zipalign" -c -P 16 4 "$stage/signed.apk"
 
 mv -f -- "$stage/signed.apk" "$apk"
 printf '%s\n' "$apk"

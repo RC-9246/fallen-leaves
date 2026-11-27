@@ -154,7 +154,9 @@ final class MemoryTrend extends LinearLayout {
       if (right <= left || bottom <= top) return;
       canvas.drawText(highLabel, 0, top, axis);
       canvas.drawText(lowLabel, 0, bottom, axis);
-      canvas.drawText("2 分钟前", left, getHeight() - axis.descent(), axis);
+      if (right - left >= axis.measureText("2 分钟前") + axis.measureText("现在") + dp(6)) {
+        canvas.drawText("2 分钟前", left, getHeight() - axis.descent(), axis);
+      }
       canvas.drawText("现在", right - axis.measureText("现在"), getHeight() - axis.descent(), axis);
       pen.setColor(guideColor);
       pen.setStrokeWidth(dp(1));
