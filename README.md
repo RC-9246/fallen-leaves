@@ -26,6 +26,8 @@ The usage threshold requires three qualifying 30-second samples and has a 30-min
 
 **Background monitoring (1.4.2 and later).** Enable monitoring under **运存 → 自动监控**. A foreground-service notification stays visible while using other apps, after removing the Fallen Leaves task from Recents, and while the screen is locked. If Android recreates the service after terminating its process, it restores the active mode and interval deadline. Sleep can delay checks, and missed intervals coalesce into one. Stopping monitoring from its notification, force-stopping the app, or rebooting requires a new manual start. Previously saved settings alone cannot start a session. [Android service restart behavior](https://developer.android.com/reference/android/app/Service#START_STICKY)
 
+On a OnePlus 8T running HydrogenOS 11, if the monitoring notification stays visible but scheduled actions stop appearing in History while the screen is locked, choose **Settings → Battery → Battery optimization → 落叶 (Fallen Leaves) → Don’t optimize**.
+
 ## Extended reclaim scopes
 
 Open **运存 → 扩展回收范围**. Each of the five new scopes has its own saved switch, initially off. Turn on a scope and use its individual action. The app asks you to pick a cached app each time a target is needed. The tile and automatic monitor retain their file-page scope. Four further switches control the original global file pages, kernel objects, voluntary app trim and old diagnostics, including their existing entry points. These four start enabled on upgrade.
