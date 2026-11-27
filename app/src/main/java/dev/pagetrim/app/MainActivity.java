@@ -27,6 +27,7 @@ import java.util.Locale;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -36,6 +37,8 @@ public final class MainActivity extends Activity {
   private static final String[] TABS = {"运存", "存储", "记录"};
   private static final AtomicBoolean ACTIVE = new AtomicBoolean();
   private static final ExecutorService JOBS = Executors.newSingleThreadExecutor();
+  private static final ExecutorService MONITOR_AUTH = Executors.newSingleThreadExecutor();
+  private static final String MONITOR_PROCESS = java.util.UUID.randomUUID().toString();
   private static volatile boolean rootVerified;
   private static volatile String jobName = "";
   private final Handler handler = new Handler(Looper.getMainLooper());
@@ -46,6 +49,10 @@ public final class MainActivity extends Activity {
   private AlertDialog watchDialog, manualDialog;
   private AlertDialog appearanceDialog, extendedDialog;
   private WatchConfig pendingMonitor;
+  private long monitorRequest;
+  private boolean permissionInFlight, monitorRootReady;
+  private String monitorFailure;
+  private Future<?> monitorProbe;
   private int confirmMask;
   private Switch askBeforeReclaim;
   private CheckBox skipFileConfirmation;
@@ -82,10 +89,15 @@ public final class MainActivity extends Activity {
       rankByCache = state.getBoolean("rankByCache", true);
       returnToRanking = state.getBoolean("returnToRanking");
       Bundle config = state.getBundle("pendingMonitor");
-      if (config != null) pendingMonitor = new WatchConfig(
-          config.getBoolean("threshold"), config.getInt("used"), config.getBoolean("interval"),
-          config.getInt("minutes"), config.getBoolean("root")
-              ? WatchService.Mode.ROOT_RECLAIM : WatchService.Mode.ALERT_ONLY, config.getBoolean("lowMemoryOnly"));
+      monitorRequest = state.getLong("monitorRequest");
+      boolean sameProcess = MONITOR_PROCESS.equals(state.getString("monitorProcess"));
+      permissionInFlight = sameProcess && state.getBoolean("monitorPermissionInFlight");
+      if (sameProcess && config != null && WatchService.isLatestRequest(monitorRequest)) {
+        pendingMonitor = new WatchConfig(
+            config.getBoolean("threshold"), config.getInt("used"), config.getBoolean("interval"),
+            config.getInt("minutes"), config.getBoolean("root")
+                ? WatchService.Mode.ROOT_RECLAIM : WatchService.Mode.ALERT_ONLY, config.getBoolean("lowMemoryOnly"));
+      }
     }
     draw();
     if (state == null) {
@@ -135,6 +147,7 @@ public final class MainActivity extends Activity {
     resumed = true;
     handler.removeCallbacks(poll);
     poll.run();
+    continueMonitorRequest();
     if (returnToRanking) {
       returnToRanking = false;
       if (tab == 1 && StorageRanking.hasUsageAccess(this)) showRanking();
@@ -146,6 +159,12 @@ public final class MainActivity extends Activity {
     resumed = false;
     handler.removeCallbacks(poll);
     super.onPause();
+  }
+
+  @Override
+  protected void onDestroy() {
+    clearMonitorRequest();
+    super.onDestroy();
   }
 
   @Override
@@ -165,7 +184,10 @@ public final class MainActivity extends Activity {
       b.putInt("confirmMask", confirmMask);
       if (skipFileConfirmation != null) b.putBoolean("skipFileConfirmation", skipFileConfirmation.isChecked());
     }
-    if (pendingMonitor != null) {
+    b.putString("monitorProcess", MONITOR_PROCESS);
+    b.putBoolean("monitorPermissionInFlight", permissionInFlight);
+    if (pendingMonitor != null && WatchService.isLatestRequest(monitorRequest)) {
+      b.putLong("monitorRequest", monitorRequest);
       Bundle config = new Bundle();
       config.putBoolean("threshold", pendingMonitor.thresholdEnabled);
       config.putInt("used", pendingMonitor.usedPercent);
@@ -516,6 +538,11 @@ public final class MainActivity extends Activity {
       case ROOT_RECLAIM: status = "自动回收文件页 · 运行中"; break;
       default: status = "已关闭 · 可设置占用阈值和定时间隔";
     }
+    if (pendingMonitor != null) {
+      if (!WatchService.isLatestRequest(monitorRequest)) clearMonitorRequest();
+      else status = (WatchService.isRunning() ? status + " · " : "")
+          + (permissionInFlight ? "正在等待通知授权" : "正在准备启用监控");
+    }
     if (!status.contentEquals(monitorNote.getText())) monitorNote.setText(status);
   }
 
@@ -652,36 +679,59 @@ public final class MainActivity extends Activity {
       }
 
       @Override public void onStop() { stopMonitor(); }
-    }, editorState);
+    }, editorState, pendingMonitor != null && WatchService.isLatestRequest(monitorRequest) ? pendingMonitor : null);
+  }
+
+  private void clearMonitorRequest() {
+    pendingMonitor = null;
+    monitorRootReady = false;
+    monitorFailure = null;
+    if (monitorProbe != null) monitorProbe.cancel(true);
+    monitorProbe = null;
   }
 
   private void stopMonitor() {
-    WatchService.stop(this);
-    handler.postDelayed(this::update, 300);
-    toast("监控已关闭");
+    clearMonitorRequest();
+    try {
+      WatchService.stop(this);
+      handler.postDelayed(this::update, 300);
+      toast("已请求停止监控");
+    } catch (RuntimeException failure) {
+      message("停止失败", reason(failure));
+    }
   }
 
   private void requestMonitor(WatchConfig config) {
+    clearMonitorRequest();
+    monitorRequest = WatchService.beginUserRequest();
+    pendingMonitor = config;
     if (Build.VERSION.SDK_INT >= 33
         && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-      pendingMonitor = config;
-      requestPermissions(new String[] {Manifest.permission.POST_NOTIFICATIONS}, ALERT_PERMISSION);
+      // The permission grant applies to the app. Coalesce another explicit selection while its
+      // dialog is open, but always resolve it against the latest monitor request.
+      if (!permissionInFlight) {
+        permissionInFlight = true;
+        try {
+          requestPermissions(new String[] {Manifest.permission.POST_NOTIFICATIONS}, ALERT_PERMISSION);
+        } catch (RuntimeException failure) {
+          permissionInFlight = false;
+          clearMonitorRequest();
+          message("无法申请通知权限", reason(failure));
+        }
+      }
       return;
     }
-    startMonitor(config);
+    continueMonitorRequest();
   }
 
   @Override
   public void onRequestPermissionsResult(int code, String[] permissions, int[] results) {
     super.onRequestPermissionsResult(code, permissions, results);
-    if (code != ALERT_PERMISSION || pendingMonitor == null) return;
-    WatchConfig config = pendingMonitor;
-    pendingMonitor = null;
-    if (results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED) {
-      startMonitor(config);
-    } else {
-      notificationSettings();
-    }
+    if (code != ALERT_PERMISSION) return;
+    permissionInFlight = false;
+    // The service may have been stopped from its notification while Settings was in front.
+    // Read the current permission state when resumed; the callback may precede onResume.
+    continueMonitorRequest();
   }
 
   private void notificationSettings() {
@@ -696,24 +746,58 @@ public final class MainActivity extends Activity {
         }).show();
   }
 
-  private void startMonitor(WatchConfig config) {
+  private void continueMonitorRequest() {
+    if (pendingMonitor == null) return;
+    if (!WatchService.isLatestRequest(monitorRequest)) {
+      clearMonitorRequest();
+      return;
+    }
+    if (!resumed || isFinishing() || isDestroyed() || permissionInFlight) return;
+    if (monitorFailure != null) {
+      String failure = monitorFailure;
+      clearMonitorRequest();
+      message("监控未启动", failure);
+      return;
+    }
+    WatchConfig config = pendingMonitor;
     if (!WatchService.notificationsEnabled(this, config.mode)) {
+      clearMonitorRequest();
       notificationSettings();
       return;
     }
     if (config.mode == WatchService.Mode.ROOT_RECLAIM) {
-      if (!allowed(LegacyScope.Scope.FILES)) return;
-      work("正在检查监控权限", () -> Root.run("id -u", 20), id -> {
-        if (!"0".equals(id)) {
-          message("监控未启动", "自动回收需要 Root 授权。也可以选择仅通知提醒。");
-          return;
-        }
-        rootVerified = true;
-        launchMonitor(config);
-      });
-    } else {
-      launchMonitor(config);
+      if (!allowed(LegacyScope.Scope.FILES)) {
+        clearMonitorRequest();
+        return;
+      }
+      if (!monitorRootReady) {
+        if (monitorProbe == null) checkMonitorRoot(monitorRequest);
+        return;
+      }
     }
+    clearMonitorRequest();
+    launchMonitor(config);
+  }
+
+  private void checkMonitorRoot(long request) {
+    monitorProbe = MONITOR_AUTH.submit(() -> {
+      String failure = null;
+      try {
+        if (!"0".equals(Root.run("id -u", 20))) failure = "自动回收需要 Root 授权。也可以选择仅通知提醒。";
+      } catch (Exception e) {
+        failure = reason(e);
+      }
+      final String result = failure;
+      handler.post(() -> {
+        if (isFinishing() || isDestroyed() || pendingMonitor == null
+            || request != monitorRequest || !WatchService.isLatestRequest(request)) return;
+        monitorProbe = null;
+        monitorFailure = result;
+        monitorRootReady = result == null;
+        if (monitorRootReady) rootVerified = true;
+        continueMonitorRequest();
+      });
+    });
   }
 
   private void launchMonitor(WatchConfig config) {

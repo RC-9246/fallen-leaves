@@ -48,10 +48,14 @@ public final class WatchConfig {
   }
 
   public void save(Context context) {
-    context.getSharedPreferences("memory_watch", Context.MODE_PRIVATE).edit()
+    write(context.getSharedPreferences("memory_watch", Context.MODE_PRIVATE).edit()).apply();
+  }
+
+  SharedPreferences.Editor write(SharedPreferences.Editor editor) {
+    return editor
         .putBoolean("threshold_enabled", thresholdEnabled).putInt("used_percent", usedPercent)
         .putBoolean("interval_enabled", intervalEnabled).putInt("interval_minutes", intervalMinutes)
-        .putString("action_mode", mode.name()).putBoolean("low_memory_only", lowMemoryOnly).apply();
+        .putString("action_mode", mode.name()).putBoolean("low_memory_only", lowMemoryOnly);
   }
 
   private static int clamp(int value, int low, int high) {

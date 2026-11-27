@@ -19,6 +19,13 @@ final class WatchTiming {
     nextInterval = intervalEnabled ? now + intervalMs : Long.MAX_VALUE;
   }
 
+  void resume(long deadline, boolean wasArmed) {
+    // The elapsed-clock deadline belongs to an already running session on this boot.
+    if (intervalMs > 0 && deadline > 0) nextInterval = deadline;
+    armed = wasArmed;
+  }
+
+  long intervalDeadline() { return nextInterval; }
   boolean sampleDue(long now) { return now >= nextSample; }
   long delay(long now) { return Math.max(1L, Math.min(nextInterval, nextSample) - now); }
   boolean isArmed() { return armed; }

@@ -109,6 +109,11 @@ public final class WatchEditor {
       lowMemoryOnly.setEnabled(withRoot);
       addView(lowMemoryOnly);
       group.setOnCheckedChangeListener((buttons, selected) -> lowMemoryOnly.setEnabled(selected == reclaim.getId()));
+      TextView background = new TextView(activity);
+      background.setPadding(0, pad / 2, 0, 0);
+      background.setText("监控开启后会显示常驻通知。切到其他应用、锁屏或划走落叶时，监控可继续，休眠可能推迟检查。"
+          + "系统回收进程后可尝试恢复监控。手动停止或手机重启后，需要重新开启。");
+      addView(background);
       error = new TextView(activity);
       error.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
       error.setVisibility(GONE);
@@ -154,7 +159,11 @@ public final class WatchEditor {
   }
 
   public static AlertDialog show(Activity activity, Callback callback, Bundle draft) {
-    Form form = new Form(activity, WatchConfig.load(activity), draft);
+    return show(activity, callback, draft, null);
+  }
+
+  static AlertDialog show(Activity activity, Callback callback, Bundle draft, WatchConfig pending) {
+    Form form = new Form(activity, pending == null ? WatchConfig.load(activity) : pending, draft);
     ScrollView scroll = new ScrollView(activity);
     scroll.addView(form);
     AlertDialog.Builder builder = new AlertDialog.Builder(activity)
@@ -162,7 +171,8 @@ public final class WatchEditor {
         .setView(scroll)
         .setPositiveButton("保存", null)
         .setNegativeButton("取消", null);
-    if (WatchService.isRunning()) builder.setNeutralButton("停止监控", (d, which) -> callback.onStop());
+    if (WatchService.isRunning() || pending != null)
+      builder.setNeutralButton(WatchService.isRunning() ? "停止监控" : "取消启用", (d, which) -> callback.onStop());
     AlertDialog dialog = builder.create();
     dialog.setOnShowListener(ignored -> {
       form.updateButton(dialog);

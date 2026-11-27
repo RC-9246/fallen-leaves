@@ -61,6 +61,15 @@ public final class WatchTimingTest {
     eq(0, guarded.tick(90_000, 90, -1, false));
     eq(T | I, guarded.tick(2*M, 90, -1, true));
     eq(0, guarded.tick(150_000, 95, 2*M, true));
+    // An OS recreation keeps the already-scheduled deadline and coalesces missed intervals.
+    WatchTiming restored = new WatchTiming(true, 90, true, 1, 215_000);
+    restored.resume(120_000, false);
+    eq(I, restored.tick(215_001, 95, -1));
+    eq(240_000, restored.intervalDeadline());
+    eq(0, restored.tick(215_002, 95, -1));
+    eq(0, restored.isArmed() ? 1 : 0);
+    eq(I, restored.tick(245_000, 85, -1));
+    eq(1, restored.isArmed() ? 1 : 0);
     WatchTiming reboot = new WatchTiming(true, 90, false, 30, 0);
     eq(0, reboot.tick(M, 100, 40*M));
     eq(0, reboot.tick(2*M, 100, 40*M));

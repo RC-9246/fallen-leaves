@@ -47,6 +47,13 @@ public final class WatchService extends Service {
   private static final int NOTIFICATION_ID = 104;
 
   private static final String PREFS = "memory_watch";
+  private static final String SESSION = "watch_running_session";
+  private static final String DEADLINE = "next_interval_elapsed";
+  private static final String ARMED = "threshold_armed";
+  private static final String UI_STOP = "stop_from_ui";
+  private static volatile long userRequest;
+  private static boolean startPending;
+
   private static final String LAST_ATTEMPT = "last_attempt_elapsed_ms";
   private static final String LAST_ALERT = "last_alert_elapsed_ms";
   private static final Object ATTEMPT_LOCK = new Object();
@@ -55,6 +62,10 @@ public final class WatchService extends Service {
   private final Handler main = new Handler(Looper.getMainLooper());
   private volatile Sampler sampler;
 
+
+  // All user commands originate on the main thread. Workers only compare the request id.
+  static long beginUserRequest() { return ++userRequest; }
+  static boolean isLatestRequest(long request) { return request == userRequest; }
 
   public static boolean isRunning() {
     return activeMode != Mode.OFF;
@@ -105,57 +116,102 @@ public final class WatchService extends Service {
         .putExtra(EXTRA_LOW_MEMORY_ONLY, config.lowMemoryOnly)
         .putExtra(EXTRA_MODE, config.mode.name());
     context.startForegroundService(request);
-    config.save(context);
+    startPending = true;
   }
 
   public static void stop(Context context) {
-    context.stopService(new Intent(context, WatchService.class));
+    beginUserRequest();
+    Intent command = new Intent(context, WatchService.class);
+    if (startPending || isRunning()) {
+      // Deliver in start order, even when the initial foreground promotion is still pending.
+      context.startService(command.setAction(ACTION_STOP).putExtra(UI_STOP, true));
+    } else {
+      clearSession(context);
+      context.stopService(command);
+    }
+  }
+
+  private static void clearSession(Context context) {
+    synchronized (ATTEMPT_LOCK) {
+      context.getSharedPreferences(SESSION, MODE_PRIVATE).edit().clear().commit();
+    }
+  }
+
+  private WatchConfig restoredConfig(SharedPreferences session) {
+    if (!session.getBoolean("running", false)) return null;
+    // Never derive permission to restart from editable preferences or last-used root settings.
+    return new WatchConfig(
+        session.getBoolean("threshold_enabled", false), session.getInt("used_percent", -1),
+        session.getBoolean("interval_enabled", false), session.getInt("interval_minutes", -1),
+        Mode.valueOf(session.getString("action_mode", "")), session.getBoolean("low_memory_only", false));
+  }
+
+  private void finishSession(int startId) {
+    cancelSampling();
+    clearSession(this);
+    stopForeground(STOP_FOREGROUND_REMOVE);
+    stopSelf(startId);
   }
 
   @Override
   public int onStartCommand(Intent intent, int flags, int startId) {
     String action = intent == null ? null : intent.getAction();
+    startPending = false;
     if (ACTION_STOP.equals(action)) {
-      cancelSampling();
-      stopForeground(STOP_FOREGROUND_REMOVE);
-      stopSelf(startId);
-      return START_NOT_STICKY;
-    }
-
-    if (!ACTION_START.equals(action) || intent == null) {
-      stopSelf(startId);
+      if (!intent.getBooleanExtra(UI_STOP, false)) beginUserRequest();
+      finishSession(startId);
       return START_NOT_STICKY;
     }
     try {
-      Mode mode = Mode.valueOf(intent.getStringExtra(EXTRA_MODE));
+      SharedPreferences session = getSharedPreferences(SESSION, MODE_PRIVATE);
       WatchConfig config;
-      if (intent.hasExtra(EXTRA_USED)) {
-        config = new WatchConfig(intent.getBooleanExtra(EXTRA_THRESHOLD_ENABLED, false),
-            intent.getIntExtra(EXTRA_USED, -1), intent.getBooleanExtra(EXTRA_INTERVAL_ENABLED, false),
-            intent.getIntExtra(EXTRA_INTERVAL, -1), mode, intent.getBooleanExtra(EXTRA_LOW_MEMORY_ONLY, false));
+      if (intent == null) {
+        config = restoredConfig(session);
+        if (config == null) {
+          finishSession(startId);
+          return START_NOT_STICKY;
+        }
+      } else if (ACTION_START.equals(action)) {
+        Mode mode = Mode.valueOf(intent.getStringExtra(EXTRA_MODE));
+        if (intent.hasExtra(EXTRA_USED)) {
+          config = new WatchConfig(intent.getBooleanExtra(EXTRA_THRESHOLD_ENABLED, false),
+              intent.getIntExtra(EXTRA_USED, -1), intent.getBooleanExtra(EXTRA_INTERVAL_ENABLED, false),
+              intent.getIntExtra(EXTRA_INTERVAL, -1), mode, intent.getBooleanExtra(EXTRA_LOW_MEMORY_ONLY, false));
+        } else {
+          int threshold = intent.getIntExtra(EXTRA_THRESHOLD, -1);
+          if (!validThreshold(threshold)) throw new IllegalArgumentException("阈值无效");
+          config = new WatchConfig(true, 100 - threshold, false, 30, mode);
+        }
       } else {
-        int threshold = intent.getIntExtra(EXTRA_THRESHOLD, -1);
-        if (!validThreshold(threshold)) throw new IllegalArgumentException("阈值无效");
-        config = new WatchConfig(true, 100 - threshold, false, 30, mode);
+        throw new IllegalArgumentException("监控请求无效。");
       }
       if (!config.hasTriggers()) throw new IllegalArgumentException("没有启用的触发条件");
       startForeground(NOTIFICATION_ID, createNotification(config));
-      if (!notificationsEnabled(this, mode))
+      if (!notificationsEnabled(this, config.mode))
         throw new IllegalStateException("系统通知或监控通知类别已关闭。");
-      Sampler current = sampler;
-      if (current == null || !current.config.sameSettings(config)) {
-        cancelSampling();
-        Sampler next = new Sampler(config);
-        sampler = next;
-        next.scheduleNext(next.timing.delay(SystemClock.elapsedRealtime()));
+      synchronized (ATTEMPT_LOCK) {
+        if (sampler == null || !sampler.config.sameSettings(config)) {
+          cancelSampling();
+          Sampler next = new Sampler(config);
+          sampler = next;
+          if (intent == null) {
+            next.timing.resume(session.getLong(DEADLINE, -1L), session.getBoolean(ARMED, true));
+          } else if (!config.write(session.edit()).putBoolean("running", true)
+              .putLong(DEADLINE, next.timing.intervalDeadline()).putBoolean(ARMED, true).commit()) {
+            throw new IllegalStateException("无法保存本次运行的监控配置。");
+          }
+          next.scheduleNext(next.timing.delay(SystemClock.elapsedRealtime()));
+        }
+        activeMode = config.mode;
       }
-      activeMode = mode;
+      if (intent != null) config.save(this);
+      else History.add(this, "后台监控已恢复", "Android 重新创建了监控服务，继续本次配置。");
+      return START_STICKY;
     } catch (RuntimeException failure) {
-      cancelSampling();
       History.add(this, "监控启动失败", errorDetail(failure));
-      stopSelf(startId);
+      finishSession(startId);
+      return START_NOT_STICKY;
     }
-    return START_NOT_STICKY;
   }
 
   @Override
@@ -266,7 +322,6 @@ public final class WatchService extends Service {
 
     private void sample() {
       if (!notificationsEnabled(WatchService.this, config.mode)) {
-        worker.shutdown();
         main.post(this::stopForBlockedNotifications);
         return;
       }
@@ -291,7 +346,18 @@ public final class WatchService extends Service {
       synchronized (ATTEMPT_LOCK) {
         if (inactive()) return;
         SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        long previousDeadline = timing.intervalDeadline();
         reasons = timing.tick(now, used, prefs.getLong(key, -1L), pressureAllows);
+        if (previousDeadline != timing.intervalDeadline() || wasArmed != timing.isArmed()) {
+          boolean saved = getSharedPreferences(SESSION, MODE_PRIVATE).edit()
+              .putLong(DEADLINE, timing.intervalDeadline()).putBoolean(ARMED, timing.isArmed()).commit();
+          if (!saved) {
+            main.post(() -> {
+              if (sampler == this) stopForFailure("无法保存监控计时。");
+            });
+            return;
+          }
+        }
         if ((reasons & WatchTiming.THRESHOLD) != 0 && !prefs.edit().putLong(key, now).commit()) {
           reasons &= ~WatchTiming.THRESHOLD;
         }
@@ -344,9 +410,15 @@ public final class WatchService extends Service {
 
     // Both notification delivery and service lifecycle changes are serialized on the main thread.
     private void stopForBlockedNotifications() {
-      if (sampler != this) return;
-      History.add(WatchService.this, "监控已停止", "系统通知或监控通知类别已关闭");
+      if (sampler != this || notificationsEnabled(WatchService.this, config.mode)) return;
+      stopForFailure("系统通知或监控通知类别已关闭");
+    }
+
+    private void stopForFailure(String reason) {
+      History.add(WatchService.this, "监控已停止", reason);
+      beginUserRequest();
       cancelSampling();
+      clearSession(WatchService.this);
       stopForeground(STOP_FOREGROUND_REMOVE);
       stopSelf();
     }
