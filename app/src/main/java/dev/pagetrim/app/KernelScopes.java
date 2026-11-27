@@ -17,6 +17,8 @@ final class KernelScopes {
   enum Key {
     DENTRY("目录项分配器空页", "请求 dentry 缓存归还整块空页。后续路径查询可能有额外分配。"),
     INODE("inode 分配器空页", "仅收缩 inode_cache 分配器。文件系统可使用其他专用 inode 缓存。"),
+    F2FS_INODE("F2FS 专用 inode 分配器", "收缩已挂载 F2FS 的专用 inode 对象池，只能归还整块空闲 slab。"),
+    EXT4_INODE("ext4 专用 inode 分配器", "收缩已挂载 ext4 的专用 inode 对象池，只能归还整块空闲 slab。"),
     ION_POOL("ION 普通系统堆闲置页", "只处理驱动公开的普通系统堆闲置池。设备可能很快补充该池。"),
     BINDER_POOL("Binder 空闲缓冲页", "在内核提供具名接口时，限量扫描 Binder 的空闲缓冲对象。"),
     KGSL_POOL("KGSL 空闲页池", "检测 GPU 空闲页池的专用收缩器。活跃 GPU 分配不能计入可清额度。"),

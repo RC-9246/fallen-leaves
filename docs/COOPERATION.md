@@ -49,6 +49,7 @@ Scopes are case-sensitive and separated by commas or whitespace in the metadata.
 | NATIVE_ALLOCATOR | Ask the local allocator to return eligible free pages. |
 | OBJECT_POOL, IMAGE_CACHE | Drop reconstructible objects or decoded images. |
 | GPU_RESOURCES | Release idle textures or other reconstructible graphics resources under the owner's lifetime rules. |
+| IMAGE_READER_BUFFERS | Discard free buffers in an existing, owner-managed ImageReader on Android 9 (API 28) or newer. |
 | SQLITE_CACHE | Ask local SQLite to release memory. |
 | DISCARDABLE_PRIVATE | Release only private contents the owner explicitly discarded. |
 | ACTIVITY_INSTANCE, BROWSER_TAB | Confirm the page can be reconstructed and preserve necessary state. |
@@ -57,3 +58,18 @@ Scopes are case-sensitive and separated by commas or whitespace in the metadata.
 | SAVE_SESSION, RESTORE_SESSION | Store and restore the owner's supported application state. |
 
 Fallen Leaves checks that the component and certificate still match before dispatch, then verifies the returned scope, request ID and installed signer. Its history labels the returned summary as the owner's own report. An acceptance or an allocator byte count does not establish a system-wide gain in physical RAM.
+
+## Camera and video owners
+
+To offer `IMAGE_READER_BUFFERS`, add that exact value to the activity metadata and to the confirmed request handler. Call the following on the thread that controls the lifetime of the existing reader. Return the resulting text in the `summary` extra with the original scope and request ID.
+
+```java
+static String discardIdleImageBuffers(android.media.ImageReader reader) {
+    if (android.os.Build.VERSION.SDK_INT < 28) return "Requires Android 9 or newer.";
+    if (reader == null) return "No open image reader.";
+    reader.discardFreeBuffers();
+    return "Requested release of this reader's idle buffers. Byte count unavailable.";
+}
+```
+
+The reader stays open. Images already acquired by the application, frames waiting for acquisition, and buffers in use by the producer stay available. A later frame may require a new allocation. The platform returns no buffer count or byte total. [Android ImageReader API](https://developer.android.com/reference/android/media/ImageReader#discardFreeBuffers())

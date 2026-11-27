@@ -76,13 +76,19 @@ def main():
         assert invoke('list', parent + '/2e2e', '-', check=False).returncode
         shell(f'cd {folder} && mv file original && cp {data}/bytes file', root=True)
         assert invoke('evict', parent, item[1], item[3], check=False).returncode
-        shell(f'cd {folder}/pages && i=1; while [ "$i" -le 99 ]; do touch "p$i"; i=$((i+1)); done', root=True)
+        shell(f'cd {folder}/pages && i=96; while [ "$i" -ge 1 ]; do touch "p$i"; i=$((i-1)); done'
+              ' && ln -s p1 z-last-link', root=True)
         sub = parent + '/' + 'pages'.encode().hex()
+        full = invoke('list', sub, '-').stdout.splitlines()
+        assert len(full) == 96 and all(row.startswith('F ') for row in full), 'phantom next page'
+        shell(f'cd {folder}/pages && touch p97 p98 p99', root=True)
         first = invoke('list', sub, '-').stdout.splitlines()
-        assert first[-1].startswith('N ')
+        assert len(first) == 97 and first[-1].startswith('N ')
         cursor = first[-1].split()[1]
+        assert cursor.split('_', 1)[0] == first[-2].split()[1]
         second = invoke('list', sub, cursor).stdout.splitlines()
-        assert len({l.split()[1] for l in first[:-1]+second}) == 99
+        names = [bytes.fromhex(row.split()[1]).decode() for row in first[:-1] + second]
+        assert names == sorted(f'p{i}' for i in range(1, 100)), 'page entries missing, repeated or unordered'
         shell('touch ' + folder + '/pages/changed', root=True)
         assert invoke('list', sub, cursor, check=False).returncode
         print(f'Download-cache guards passed. Measured {before} → {after} pages of {page} bytes, file intact.')
@@ -90,7 +96,7 @@ def main():
         if created:
             shell(f'cd {folder} && rm -f bytes file original h1 h2 link && if [ -d pages ]; then '
                   'i=1; while [ "$i" -le 99 ]; do rm -f "pages/p$i"; i=$((i+1)); done; '
-                  'rm -f pages/changed && rmdir pages; fi && rmdir ' + folder, root=True)
+                  'rm -f pages/changed pages/z-last-link && rmdir pages; fi && rmdir ' + folder, root=True)
         shell('cd ' + data + ' && rm -f bytes tool && rmdir ' + data)
 
 

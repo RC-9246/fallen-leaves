@@ -21,6 +21,10 @@ public final class TargetReclaimTest {
         throw new AssertionError("missing zRAM statistics");
       if (!TargetReclaim.report(2, TargetReclaim.Mode.COLD, "COLD 0 1 0").partial)
         throw new AssertionError("unknown process state");
+      if (!TargetReclaim.report(1, TargetReclaim.Mode.FORCE_STOP, "COLD 0 0 0\nSTOPPED stopped=false").partial
+          || !TargetReclaim.report(1, TargetReclaim.Mode.FORCE_STOP, "COLD 0 0 0").partial
+          || TargetReclaim.report(1, TargetReclaim.Mode.FORCE_STOP, "COLD 0 0 0\nSTOPPED stopped=true").partial)
+        throw new AssertionError("force-stop needs independent current-user package state");
       TargetReclaim.Result gc = TargetReclaim.report(2, TargetReclaim.Mode.ART_GC, samples + "GC 1");
       if (!gc.partial || !gc.text.contains("1/2")) throw new AssertionError(gc.text);
       TargetReclaim.Result laz = TargetReclaim.report(2, TargetReclaim.Mode.LAZY_FREE, "LAZY 123 0\nLAZY 124 32");
@@ -28,8 +32,20 @@ public final class TargetReclaimTest {
       TargetReclaim.Result range = TargetReclaim.report(2, TargetReclaim.Mode.RANGE_FILE, samples + "RANGE 1048576 2097152\nSTOP changed");
       if (!range.partial || !range.text.contains("changed") || range.text.contains("粗略净收益"))
         throw new AssertionError(range.text);
-      TargetReclaim.Result marked = TargetReclaim.report(2, TargetReclaim.Mode.MARK_COLD, samples + "RANGE 1048576 1048576");
+      TargetReclaim.Result marked = TargetReclaim.report(2, TargetReclaim.Mode.MARK_COLD, samples + "RANGE 1048576 1048576\nVMA0 2097152 1024 0\nVMA1 2097152 768 256");
       if (marked.partial || !marked.text.contains("标冷") || marked.text.contains("净收益")) throw new AssertionError(marked.text);
+      String maps = "VMA0 2097152 1024 0\nVMA1 2097152 768 256\n";
+      String appMoves = "BASE 400000\nAFTER 100000\nZ0 /zram0 50\nZ1 /zram0 100\n";
+      TargetReclaim.Result subset = TargetReclaim.report(2, TargetReclaim.Mode.RANGE_ANON,
+          maps + appMoves + "RANGE 1048576 1048576");
+      if (subset.partial || subset.text.contains("粗略净收益") || !subset.text.contains("驻留减少量 +262144")
+          || !subset.text.contains("区间以外")) throw new AssertionError(subset.text);
+      TargetReclaim.Result full = TargetReclaim.report(2, TargetReclaim.Mode.RANGE_ANON,
+          maps + appMoves + "RANGE 2097152 2097152");
+      if (full.partial || !full.text.contains("粗略净收益 +262094")) throw new AssertionError(full.text);
+      TargetReclaim.Result unmapped = TargetReclaim.report(1, TargetReclaim.Mode.RANGE_ANON,
+          appMoves + "VMA0 2097152 1024 0\nRANGE 2097152 2097152");
+      if (!unmapped.partial || unmapped.text.contains("粗略净收益")) throw new AssertionError(unmapped.text);
       try {
         TargetReclaim.report(1, TargetReclaim.Mode.PAGEOUT, "RANGE 0 1048576\nSTOP ENOSYS");
         throw new AssertionError("unsupported kernel reported success");

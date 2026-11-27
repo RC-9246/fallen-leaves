@@ -25,8 +25,10 @@
 #define MAX_HEADER 1024
 #define MAX_CHUNK (4ULL << 20)
 
+enum field { RSS, SWAP, ANONYMOUS, PRIVATE_DIRTY, SHARED_DIRTY, FIELD_COUNT };
 struct mapping {
-    unsigned long long start, end, rss_kib;
+    unsigned long long start, end, kib[FIELD_COUNT];
+    unsigned int seen;
     char header[MAX_HEADER], label[90];
     int anon;
 };
@@ -80,7 +82,7 @@ static int header(const char *line, const char *kind, struct mapping *m) {
     const char *name = line + consumed;
     if (strlen(perms) != 4 || perms[0] != 'r' || perms[3] != 'p' ||
         (m->anon && (perms[1] != 'w' || perms[2] == 'x')) ||
-        (!m->anon && (!inode || perms[1] == 'w')) ||
+        (!m->anon && (!inode || !major || perms[1] == 'w' || strstr(name, " (deleted)"))) ||
         (!strcmp(kind,"anon") && !m->anon) || (!strcmp(kind,"file") && m->anon) ||
         !allowed_name(m->anon, name)) return 1;
     memcpy(m->header, line, len + 1);
@@ -113,6 +115,35 @@ static void encode_header(const char *src, char *dst) {
     *dst = 0;
 }
 
+static void read_counter(struct mapping *m, const char *line) {
+    static const char *const fields[FIELD_COUNT] = {
+        "Rss:", "Swap:", "Anonymous:", "Private_Dirty:", "Shared_Dirty:"
+    };
+    for (int i = 0; i < FIELD_COUNT; i++) {
+        size_t length = strlen(fields[i]);
+        if (strncmp(line, fields[i], length)) continue;
+        const char *value = line + length;
+        while (isspace((unsigned char)*value)) value++;
+        char *end;
+        errno = 0;
+        unsigned long long kib = strtoull(value, &end, 10);
+        if (!isdigit((unsigned char)*value) || errno || end == value) return;
+        while (isspace((unsigned char)*end)) end++;
+        if (strcmp(end, "kB") || kib > (m->end - m->start) / 1024) return;
+        m->kib[i] = kib;
+        m->seen |= 1U << i;
+        return;
+    }
+}
+
+static int eligible(const struct mapping *m) {
+    unsigned int usage = (1U << RSS) | (1U << SWAP);
+    if ((m->seen & usage) != usage) return 0;
+    // A currently read-only MAP_PRIVATE file mapping can still contain COW pages.
+    return m->anon || (m->seen == (1U << FIELD_COUNT) - 1 && !m->kib[ANONYMOUS]
+            && !m->kib[PRIVATE_DIRTY] && !m->kib[SHARED_DIRTY] && !m->kib[SWAP]);
+}
+
 static int scan(const char *kind, const char *wanted, struct mapping *found) {
     FILE *f = fopen("smaps", "r");
     if (!f) return fail("目标进程的 smaps 不可读取。");
@@ -123,18 +154,18 @@ static int scan(const char *kind, const char *wanted, struct mapping *found) {
     while (getline(&line, &capacity, f) >= 0) {
         line[strcspn(line, "\n")] = 0;
         if (header(line, kind, &m) || !m.header[0]) continue;
-        if (!strncmp(line, "Rss:", 4)) {
-            (void)sscanf(line + 4, "%llu", &m.rss_kib);
-        } else if (!strncmp(line,"VmFlags:",8)) {
-            int safe = good_flags(line + 8);
+        if (strncmp(line,"VmFlags:",8)) {
+            read_counter(&m, line);
+        } else {
+            int safe = eligible(&m) && good_flags(line + 8);
             if (safe && wanted) {
                 char token[2 * MAX_HEADER];
                 encode_header(m.header, token);
                 if (!strcmp(token, wanted)) { *found = m; matched = 1; break; }
-            } else if (safe && m.rss_kib && !wanted) {
+            } else if (safe && m.kib[RSS] && !wanted) {
                 int i = n;
                 // Keep the biggest resident mappings; never emit a whole process map.
-                while (i > 0 && best[i-1].rss_kib < m.rss_kib) {
+                while (i > 0 && best[i-1].kib[RSS] < m.kib[RSS]) {
                     if (i < MAX_ROWS) best[i] = best[i-1];
                     i--;
                 }
@@ -151,7 +182,7 @@ static int scan(const char *kind, const char *wanted, struct mapping *found) {
     for (int i=0;i<n;i++) {
         char token[2*MAX_HEADER];
         encode_header(best[i].header, token);
-        printf("MAP %s %llu %llu %s %s\n", token,best[i].end-best[i].start,best[i].rss_kib,
+        printf("MAP %s %llu %llu %s %s\n", token,best[i].end-best[i].start,best[i].kib[RSS],
                best[i].anon?"anon":"file",best[i].label);
     }
     return 0;
@@ -194,6 +225,13 @@ int main(int argc, char **argv) {
     if (argc == 3 && !strcmp(argv[1], "list") &&
         (!strcmp(argv[2],"anon") || !strcmp(argv[2],"file") || !strcmp(argv[2],"mixed")))
         return scan(argv[2], NULL, NULL);
+    if (argc == 4 && !strcmp(argv[1], "sample") &&
+        (!strcmp(argv[2],"anon") || !strcmp(argv[2],"file") || !strcmp(argv[2],"mixed"))) {
+        struct mapping m;
+        if (scan(argv[2], argv[3], &m)) return 1;
+        printf("%llu %llu %llu\n", m.end - m.start, m.kib[RSS], m.kib[SWAP]);
+        return 0;
+    }
     // MODE KIND PID exact-header OFFSET BYTE_COUNT. No users can supply free-form address inputs.
     if (argc != 7 || (strcmp(argv[1],"range") && strcmp(argv[1],"pageout") && strcmp(argv[1],"mark")) ||
         (strcmp(argv[2],"anon") && strcmp(argv[2],"file") && strcmp(argv[2],"mixed"))) return 64;

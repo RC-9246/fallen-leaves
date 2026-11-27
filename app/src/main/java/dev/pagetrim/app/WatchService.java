@@ -1,6 +1,7 @@
 package dev.pagetrim.app;
 
 import android.Manifest;
+import android.app.ActivityManager;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
@@ -38,6 +39,7 @@ public final class WatchService extends Service {
   private static final String EXTRA_THRESHOLD_ENABLED = "threshold_enabled";
   private static final String EXTRA_INTERVAL = "interval_minutes";
   private static final String EXTRA_INTERVAL_ENABLED = "interval_enabled";
+  private static final String EXTRA_LOW_MEMORY_ONLY = "low_memory_only";
   private static final String EXTRA_MODE = "mode";
   private static final String ALERT_CHANNEL = "low_memory_alerts";
   private static final int ALERT_ID = 105;
@@ -100,6 +102,7 @@ public final class WatchService extends Service {
         .putExtra(EXTRA_THRESHOLD_ENABLED, config.thresholdEnabled)
         .putExtra(EXTRA_INTERVAL, config.intervalMinutes)
         .putExtra(EXTRA_INTERVAL_ENABLED, config.intervalEnabled)
+        .putExtra(EXTRA_LOW_MEMORY_ONLY, config.lowMemoryOnly)
         .putExtra(EXTRA_MODE, config.mode.name());
     context.startForegroundService(request);
     config.save(context);
@@ -129,7 +132,7 @@ public final class WatchService extends Service {
       if (intent.hasExtra(EXTRA_USED)) {
         config = new WatchConfig(intent.getBooleanExtra(EXTRA_THRESHOLD_ENABLED, false),
             intent.getIntExtra(EXTRA_USED, -1), intent.getBooleanExtra(EXTRA_INTERVAL_ENABLED, false),
-            intent.getIntExtra(EXTRA_INTERVAL, -1), mode);
+            intent.getIntExtra(EXTRA_INTERVAL, -1), mode, intent.getBooleanExtra(EXTRA_LOW_MEMORY_ONLY, false));
       } else {
         int threshold = intent.getIntExtra(EXTRA_THRESHOLD, -1);
         if (!validThreshold(threshold)) throw new IllegalArgumentException("阈值无效");
@@ -192,7 +195,7 @@ public final class WatchService extends Service {
         new Notification.Builder(this, CHANNEL)
             .setSmallIcon(android.R.drawable.stat_notify_sync)
             .setContentTitle(getString(R.string.app_name) + " 正在监控可用内存")
-            .setContentText(summary(config) + (mode == Mode.ALERT_ONLY ? " · 仅提醒" : " · 仅回收文件页缓存"))
+            .setContentText(summary(config) + (mode == Mode.ALERT_ONLY ? " · 仅提醒" : config.lowMemoryOnly ? " · 系统低内存时回收文件页" : " · 仅回收文件页缓存"))
             .setContentIntent(openApp(false))
             .setOngoing(true)
             .setOnlyAlertOnce(true)
@@ -279,13 +282,16 @@ public final class WatchService extends Service {
           Log.w(TAG, "Memory counters unavailable", error);
         }
       }
+      boolean guarded = config.lowMemoryOnly && config.mode == Mode.ROOT_RECLAIM;
+      boolean checkDue = timing.intervalDue(now) || (config.thresholdEnabled && timing.sampleDue(now));
+      boolean pressureAllows = !guarded || !checkDue || systemLowMemory();
       String key = config.mode == Mode.ALERT_ONLY ? LAST_ALERT : LAST_ATTEMPT;
       boolean wasArmed = timing.isArmed();
       int reasons;
       synchronized (ATTEMPT_LOCK) {
         if (inactive()) return;
         SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
-        reasons = timing.tick(now, used, prefs.getLong(key, -1L));
+        reasons = timing.tick(now, used, prefs.getLong(key, -1L), pressureAllows);
         if ((reasons & WatchTiming.THRESHOLD) != 0 && !prefs.edit().putLong(key, now).commit()) {
           reasons &= ~WatchTiming.THRESHOLD;
         }
@@ -312,11 +318,21 @@ public final class WatchService extends Service {
         History.add(WatchService.this, "自动回收已跳过", "全机干净文件页开关已关闭");
         return;
       }
-      History.add(WatchService.this, "自动回收尝试", detail);
+      if (!pressureAllows) {
+        History.add(WatchService.this, "自动回收已跳过", detail + "。未确认系统处于低内存状态。");
+        return;
+      }
       try {
-        if (inactive()) throw new InterruptedException();
-        LegacyScope.require(WatchService.this, LegacyScope.Scope.FILES);
-        RamController.reclaim(1);
+        synchronized (RamController.class) {
+          if (inactive()) throw new InterruptedException();
+          LegacyScope.require(WatchService.this, LegacyScope.Scope.FILES);
+          if (guarded && !systemLowMemory()) {
+            History.add(WatchService.this, "自动回收已跳过", "执行前未确认系统处于低内存状态。");
+            return;
+          }
+          History.add(WatchService.this, "自动回收尝试", detail);
+          RamController.reclaim(1);
+        }
         History.add(WatchService.this, "自动回收完成", "文件页缓存回收命令已完成");
       } catch (InterruptedException interrupted) {
         Thread.currentThread().interrupt();
@@ -356,6 +372,18 @@ public final class WatchService extends Service {
         return;
       }
       History.add(WatchService.this, low ? "低运存提醒" : "定时内存提醒", detail);
+    }
+
+    private boolean systemLowMemory() {
+      ActivityManager manager = getSystemService(ActivityManager.class);
+      if (manager == null) return false;
+      ActivityManager.MemoryInfo info = new ActivityManager.MemoryInfo();
+      try {
+        manager.getMemoryInfo(info);
+        return info.lowMemory;
+      } catch (RuntimeException unavailable) {
+        return false;
+      }
     }
 
     private boolean inactive() {

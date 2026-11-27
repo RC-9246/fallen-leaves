@@ -92,14 +92,20 @@ final class FilesScope {
       throw new IOException("文件访问授权已失效，请重新选择。", e);
     }
     StringBuilder result = new StringBuilder(name).append(" · ").append(MainActivity.fmt(r[0]));
+    boolean sharedView = r[6] != 0;
+    if (sharedView) result.append("\n文件由系统共享存储视图提供。");
     if (mode == SYNC) {
-      return result
-          .append("\n文件系统已接受并完成对该文件的 fsync。" + "本次只请求同步；写入字节数及物理介质内部状态无法从该接口取得。")
-          .toString();
+      return result.append("\n文件描述符的同步请求已完成。此接口无法报告写入字节数或设备内部状态。").toString();
     }
-    if (mode == EVICT && r[0] > 0) result.append("\n已向内核提交整个文件的干净页缓存逐出建议。内核也可能安排写回已有的脏页。");
+    if (mode == EVICT && r[0] > 0) {
+      result.append(
+          sharedView ? "\n共享视图已接受逐出建议，磁盘后端的缓存可能完全没有变化。" : "\n已向内核提交整个文件的干净页缓存逐出建议。内核也可能安排写回已有的脏页。");
+    }
     if (r[5] != 0) return result.append("\n文件在操作期间发生变化或无法复核，驻留变化不可比较。").toString();
     if (r[2] == 0) return result.append("\n空文件，驻留 0 页。").toString();
+    if (sharedView) {
+      return result.append("\n无法从此视图测量后端驻留页。如果文件位于 Download，可在 Root 下载文件项目中重新选择。").toString();
+    }
     if (r[3] < 0) return result.append("\n驻留未知。当前身份或文件系统无法提供可信驻留统计。").toString();
     String coverage = r[2] == r[0] ? "整个文件" : "仅开头 " + MainActivity.fmt(r[2]);
     result.append("\n").append(coverage).append("的驻留页：").append(r[3]);
@@ -119,6 +125,7 @@ final class FilesScope {
     return result.toString();
   }
 
-  // size, system page size, sampled byte range, before/after resident page counts, changed
+  // size, system page size, sampled byte range, before/after resident page counts, changed, shared
+  // storage view
   private static native long[] operate(int fd, int mode) throws IOException;
 }

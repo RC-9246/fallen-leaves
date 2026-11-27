@@ -68,6 +68,7 @@ public final class WatchEditor {
   private static final class Form extends LinearLayout {
     final Trigger threshold, interval;
     final RadioButton reminder, reclaim;
+    final Switch lowMemoryOnly;
     final TextView error;
 
     Form(Activity activity, WatchConfig saved, Bundle draft) {
@@ -102,6 +103,12 @@ public final class WatchEditor {
       addView(group);
       boolean withRoot = draft == null ? saved.mode == WatchService.Mode.ROOT_RECLAIM : draft.getBoolean("root");
       group.check(withRoot ? reclaim.getId() : reminder.getId());
+      lowMemoryOnly = new Switch(activity);
+      lowMemoryOnly.setText("仅在 Android 报告低内存时自动回收");
+      lowMemoryOnly.setChecked(draft == null ? saved.lowMemoryOnly : draft.getBoolean("lowMemoryOnly"));
+      lowMemoryOnly.setEnabled(withRoot);
+      addView(lowMemoryOnly);
+      group.setOnCheckedChangeListener((buttons, selected) -> lowMemoryOnly.setEnabled(selected == reclaim.getId()));
       error = new TextView(activity);
       error.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
       error.setVisibility(GONE);
@@ -132,6 +139,7 @@ public final class WatchEditor {
       state.putBoolean("interval", interval.enabled.isChecked());
       state.putString("minutes", interval.value.getText().toString());
       state.putBoolean("root", reclaim.isChecked());
+      state.putBoolean("lowMemoryOnly", lowMemoryOnly.isChecked());
       if (threshold.value.getError() != null)
         state.putString("percentError", threshold.value.getError().toString());
       if (interval.value.getError() != null)
@@ -176,7 +184,7 @@ public final class WatchEditor {
             : WatchService.Mode.ALERT_ONLY;
         try {
           callback.onSave(new WatchConfig(form.threshold.enabled.isChecked(), percent,
-              form.interval.enabled.isChecked(), minutes, mode));
+              form.interval.enabled.isChecked(), minutes, mode, form.lowMemoryOnly.isChecked()));
           dialog.dismiss();
         } catch (IllegalArgumentException | IllegalStateException e) {
           form.showError(e.getMessage() == null ? "无法保存监控设置。" : e.getMessage());

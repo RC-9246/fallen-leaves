@@ -38,20 +38,24 @@
 
 目标应用的两组数字分别为同一批存活进程的**驻留内存 RSS 合计**，以及整机 **zRAM 物理占用**（`mm_stat` 的 `mem_used_total`）。例如，RSS 减少 300 MiB、zRAM 增加 110 MiB，粗略净收益为 190 MiB。其他进程的同期活动和共享页重复计数都会影响估算；进程更替、计数缺失或操作只完成一部分时，结果会标出限制。内核受理请求后，实际回收量也可能为零。[Android 11 缓存进程优化器](https://android.googlesource.com/platform/frameworks/base/+/android-11.0.0_r1/services/core/java/com/android/server/am/CachedAppOptimizer.java) · [zRAM 计数说明](https://docs.kernel.org/admin-guide/blockdev/zram.html) · [旧版 ashmem 实现](https://android.googlesource.com/kernel/common/+/e515b9902f5fa362ca66db9b01e7b2161c324c06/drivers/staging/android/ashmem.c)
 
-## 1.4 高级回收与设备复核
+## 1.4.1 高级回收与设备复核
 
-进入「运存 → 高级回收与设备复核」。这里的 47 个独立开关默认关闭。打开某项后可手动选择目标、查看接口或执行。快捷磁贴和自动监控不会触发这些高级操作。结果保存在本机「记录」。
+进入「运存 → 高级回收与设备复核」。这里的 50 个独立开关默认关闭。打开某项后可手动选择目标、查看接口或执行。快捷磁贴和自动监控不会触发这些高级操作。结果保存在本机「记录」。
 
 | 分类 | 能做什么 |
 | --- | --- |
 | 文件缓存（4 项） | 查看单个文档的驻留、建议逐出干净页、单独同步获得写授权的文档，或用 Root 从当前用户真实 Download 目录逐出一个文件的缓存。驻留观测最多覆盖文件开头 128 MiB。共享存储视图有时会接受建议而保留底层页，此时结果显示无法确认。真实目录入口会再次核对文件身份。两种逐出操作均保留文件内容。 |
 | 缓存应用（6 项） | 针对所选映射回收部分私有匿名页或文件页、标冷或主动逐出。可选本次上限 4、16、32 或 64 MiB。另有 Android 11 详细内存报告触发的 ART 回收请求，以及只读的 LazyFree 统计。分段操作取决于内核接口。 |
-| 内核与驱动（17 项） | 分别探测目录项、inode、ION、Binder、KGSL、逐进程 GPU 统计、内存组、MGLRU、DAMON、KSM、zRAM 空闲标记、二次压缩、写回、去重、系统 mmd、物理页规整、锁定页与 CMA。界面按本机条件提供操作。GPU 统计、mmd、去重状态、锁定页与 CMA 为只读项目。仅标记空闲释放 0 B。 |
-| 应用协作（13 项） | GC、原生分配器、对象池、图片缓存、GPU 资源、SQLite、已作废私有页、离屏页面、浏览器标签、WebView、私有子进程、会话保存与恢复。落叶自身可执行 GC、兼容设备上归还原生分配器空页和 SQLite 缓存释放。其他应用需主动接入，并负责选择可重建的资源。打开协作界面可能启动目标应用。[接入说明](docs/COOPERATION.md) |
-| 设备复核（3 项） | 一次复核 17 项内核能力，分三次采集「动作前／动作后／切回后」的内存和换页数据，或查看所选应用近期 HWUI 帧时长的中位数与 P95。快照只比较同次开机的数据。采用其他渲染管线的游戏可能没有可读的帧记录。 |
+| 内核与驱动（19 项） | 分别探测目录项、通用 inode、F2FS 与 ext4 专用 inode、ION、Binder、KGSL、逐进程 GPU 统计、内存组、MGLRU、DAMON、KSM、zRAM 空闲标记、二次压缩、写回、去重、系统 mmd、物理页规整、锁定页与 CMA。界面按本机条件提供操作。GPU 统计、mmd、去重状态、锁定页与 CMA 为只读项目。仅标记空闲释放 0 B。 |
+| 应用协作（14 项） | GC、原生分配器、对象池、图片缓存、ImageReader 空闲缓冲（Android 9 起）、GPU 资源、SQLite、已作废私有页、离屏页面、浏览器标签、WebView、私有子进程、会话保存与恢复。落叶自身可执行 GC、兼容设备上归还原生分配器空页和 SQLite 缓存释放。其他应用需主动接入，并负责选择可重建的资源。打开协作界面可能启动目标应用。[接入说明](docs/COOPERATION.md) |
+| 设备复核（3 项） | 一次复核 19 项内核能力，分三次采集「动作前／动作后／切回后」的内存和换页数据，或查看所选应用主进程的 HWUI 帧时长中位数与 P95。可设置起点，只统计之后绘制且已完成的帧；系统保留的历史数量有限。快照只比较同次开机的数据。采用其他渲染管线的游戏可能没有可读的帧记录。 |
 | 应用生命周期（4 项） | 强停所选缓存应用、通过系统短暂冻结、调整为罕用待机组、挂起应用。强停或挂起可能中断通知。待机分组及挂起各有恢复入口，关闭开关后仍可恢复。卸载落叶前应先恢复挂起的应用，以便使用保存在本机的恢复记录。 |
 
-一加 8T（Android 11、Horizon 4.19）实测中，8 MiB 自建匿名映射仅选 2 MiB 后，驻留量减少 2 MiB，全部数据能再读回。真实 Download 目录中的 4 MiB 自建文件从 1,024 页驻留降至 0，文件哈希和长度均相同。17 项内核探测中，本机公开了四项可执行入口，另有逐应用 GPU 统计。当前内核没有这里使用的 MGLRU、DAMON 或 zRAM 写回接口。继续只读复核，未找到逐缓冲区 DMA-BUF 统计或透明大页拆分入口。相关机制见 [Linux zRAM 文档](https://docs.kernel.org/admin-guide/blockdev/zram.html)、[DMA-BUF 的所有者与引用](https://docs.kernel.org/driver-api/dma-buf.html)及 [Android mmd](https://source.android.com/docs/core/perf/mmd)。
+一加 8T（Android 11、Horizon 4.19）实测中，8 MiB 自建匿名映射仅选 2 MiB 后，驻留量减少 2 MiB，全部数据能再读回。真实 Download 目录中的 4 MiB 自建文件从 1,024 页驻留降至 0，文件哈希和长度均相同。19 项内核探测中，本机公开了六项可执行入口，另有逐应用 GPU 统计。当前内核没有这里使用的 MGLRU、DAMON 或 zRAM 写回接口。继续只读复核，未找到逐缓冲区 DMA-BUF 统计或透明大页拆分入口。相关机制见 [Linux zRAM 文档](https://docs.kernel.org/admin-guide/blockdev/zram.html)、[DMA-BUF 的所有者与引用](https://docs.kernel.org/driver-api/dma-buf.html)及 [Android mmd](https://source.android.com/docs/core/perf/mmd)。
+
+「自动监控」新增「仅在 Android 报告低内存时自动回收」，默认关闭。开启后，定时到点但系统未确认低内存时会跳过；若占用率一直超过阈值，会继续等待低内存信号。仅提醒和手动操作各自沿用原设置。[Android 低内存信号](https://developer.android.com/reference/android/app/ActivityManager.MemoryInfo#lowMemory)
+
+**怎么看回收结果。** 分段回收可重读文件映射前逐批核对匿名副本、脏页、交换页及已删除的后备文件。报告分开列出所选映射的驻留、逻辑交换和整机 zRAM 物理变化。只处理映射的一部分时，不为该部分分摊整个映射的变化。8T 已确认 F2FS 和 ext4 独立分配器各有可写的收缩入口，但本机不能据此单独核算物理收益。ImageReader 的受控测试核对了已取得、已排队和清理后产生的图像；这个 Android 接口不返回释放字节数。[Linux 进程内存统计](https://docs.kernel.org/filesystems/proc.html) · [Android ImageReader](https://developer.android.com/reference/android/media/ImageReader#discardFreeBuffers())
 
 ## 清理边界
 
@@ -70,6 +74,7 @@
 python3 tests/test-target.py
 python3 tests/test-kernel-scopes.py
 python3 tests/test-suspension.py
+python3 tests/test-frames.py
 ./tests/test-pools.sh
 ./build.sh
 ```

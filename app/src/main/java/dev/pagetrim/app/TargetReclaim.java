@@ -143,17 +143,20 @@ final class TargetReclaim {
       + "if ! cd -P /proc/\"$pid\" 2>/dev/null || ! IFS= read -r st < stat; then [ ! -d /proc/\"$pid\" ] && exit 1; exit 4; fi\n"
       + "set -- ${st##*) }; [ \"$#\" -ge 20 ] || exit 4; [ \"${20}\" = \"$born\" ] && [ \"$1\" != Z ] || exit 1;\n"
       + "[ \"$action\" = alive ] && exit 0; matches_app || exit 1;\n"
-      + "case $action in rss) awk '$1==\"VmRSS:\" && $2~/^[0-9]+$/ && $3==\"kB\" {print $2;ok=1} END{if(!ok)exit 1}' status;;\n"
+      + "case $action in rss) if [ -r smaps_rollup ]; then f=smaps_rollup; key=Rss:; else f=status; key=VmRSS:; fi; awk -v k=\"$key\" '$1==k && $2~/^[0-9]+$/ && $3==\"kB\" {print $2;ok=1} END{if(!ok)exit 1}' \"$f\";;\n"
       + "check) cached_adj || exit 1; if [ \"$area\" = file ] || [ \"$area\" = anon ]; then [ -f reclaim ] && [ ! -L reclaim ] && [ -w reclaim ] || exit 3; fi;;\n"
       + "maps) cached_adj && \"$helper\" list \"$kind\";;\n"
+      + "sample) cached_adj && \"$helper\" sample \"$kind\" \"$token\";;\n"
       + "range) cached_adj && \"$helper\" \"$operation\" \"$kind\" \"$pid\" \"$token\" \"$offset\" \"$length\";;\n"
-      + "lazy) cached_adj && awk '$1==\"LazyFree:\" && $2~/^[0-9]+$/ && $3==\"kB\" {total+=$2;found=1} END{if (!found)exit 1; print total}' smaps;;\n"
+      + "lazy) cached_adj && awk '$1==\"LazyFree:\" && $2~/^[0-9]+$/ && $3==\"kB\" {total+=$2;found=1} END{if (!found)exit 1; printf \"%.0f\\n\",total}' smaps;;\n"
       + "gc) cached_adj || exit 1; result=$(dumpsys -t 6 meminfo -d \"$pid\" 2>/dev/null) || exit 1;\n"
       + "printf '%s\\n' \"$result\" | grep -F \"** MEMINFO in pid $pid [$name] **\" >/dev/null &&\n"
       + "printf '%s\\n' \"$result\" | grep -Eq '^[[:space:]]*Objects[[:space:]]*$' ;;\n"
       + "reclaim) [ -f reclaim ] && [ ! -L reclaim ] && exec 3>reclaim || exit 1; cached_adj && printf '%s\\n' \"$area\" >&3;; esac )\n"
       + "sum_rss() { total=0; for p in $pids; do kib=$(process \"$p\" rss) || return 1; total=$((total + kib)); done; echo \"$total\"; }\n"
-      + "zram_only() { awk 'NR>1 {if($1 !~ /\\/zram[0-9]+$/) bad=1; n++} END{exit (!n || bad)}' /proc/swaps; }\n"
+      + "zram_only() ( paths=$(awk 'NR>1 {if($2!=\"partition\" || $1 !~ /\\/zram[0-9]+$/) bad=1; print $1; n++} END {if(!n || bad)exit 1}' /proc/swaps) || exit 1;\n"
+      + "for path in $paths; do node=/sys/block/${path##*/}; IFS=: read -r major minor < \"$node/dev\" || exit 1;\n"
+      + "expected=$(printf '%x:%x' \"$major\" \"$minor\") && actual=$(stat -L -c '%t:%T' \"$path\") && [ \"$actual\" = \"$expected\" ] || exit 1; done; )\n"
       + "zstat() ( set +f; sizes=''; ids=''; for d in /sys/block/zram[0-9]*; do [ -d \"$d\" ] || continue;\n"
       + "IFS= read -r statline < \"$d/mm_stat\" || exit 1; set -- $statline; case ${3:-x} in ''|*[!0-9]*) exit 1;; esac;\n"
       + "sizes=\"$sizes $3\"; ids=\"$ids/${d##*/}\"; done; [ -n \"$ids\" ] || exit 1; total=$(printf '%s\\n' \"$sizes\" | awk '{for(i=1;i<=NF;i++)n+=$i;printf \"%.0f\",n}') || exit 1; echo \"$ids $total\"; )\n";
@@ -187,18 +190,23 @@ final class TargetReclaim {
     if (mode == Mode.ART_GC)
       return pre + baseline() + "n=0; for p in $pids; do same_members && cached_uid && process \"$p\" gc || break; n=$((n+1)); done; echo GC \"$n\"\n" + finalReadings();
     if (mode == Mode.COLD || mode == Mode.FORCE_STOP) {
-      return pre + "same_members && cached_uid || stale\n"
+      return pre
           + "for p in $pids; do process \"$p\" check || stale; done\n"
+          + "same_members && cached_uid || stale\n"
           + "msg=$(am " + (mode == Mode.FORCE_STOP ? "force-stop" : "kill") + " --user " + app.uid / 100000 + " '" + app.pkg + "' 2>&1) || exit 1\n"
           + "case \"$msg\" in *[Ee]rror*|*[Ee]xception*|*'Unknown command'*) echo '系统拒绝结束缓存应用。' >&2; exit 1;; esac\n"
           + "i=0; while :; do alive=0; unknown=0; for p in $pids; do process \"$p\" alive; case $? in 0) alive=$((alive+1));; 1) :;; *) unknown=$((unknown+1));; esac; done;\n"
           + "i=$((i+1)); [ $((alive+unknown)) -gt 0 ] && [ \"$i\" -lt 6 ] || break; sleep 0.2; done\n"
-          + "if live=$(members); then set -- $live; now=$#; else now=-1; fi; echo COLD \"$alive\" \"$unknown\" \"$now\"\n";
+          + "if live=$(members); then set -- $live; now=$#; else now=-1; fi; echo COLD \"$alive\" \"$unknown\" \"$now\"\n"
+          + (mode == Mode.FORCE_STOP
+              ? "dumpsys -t 5 package '" + app.pkg + "' | awk -v u='" + app.uid / 100000 + ":' "
+                  + "'$1==\"User\" && $2==u {for(i=3;i<=NF;i++) if($i==\"stopped=true\" || $i==\"stopped=false\") "
+                  + "{n++;state=$i}} END{if(n==1)print \"STOPPED\",state}'\n" : "");
     }
     return pre
         + (mode == Mode.ANON ? "zram_only || { echo '匿名页回收需要已启用且仅使用 zRAM 的交换区。' >&2; exit 1; }\n" : "")
         + baseline()
-        + "done_count=0; for p in $pids; do same_members && cached_uid && process \"$p\" reclaim || break; done_count=$((done_count+1)); done\n"
+        + "done_count=0; for p in $pids; do same_members && cached_uid || break; [ \"$area\" != anon ] || zram_only || break; process \"$p\" reclaim || break; done_count=$((done_count+1)); done\n"
         + "echo DONE \"$done_count\"\n" + finalReadings();
   }
 
@@ -207,7 +215,7 @@ final class TargetReclaim {
   }
 
   private static String finalReadings() {
-    return "if same_members && after=$(sum_rss); then echo AFTER \"$after\"; fi\n"
+    return "if same_members && after=$(sum_rss) && same_members; then echo AFTER \"$after\"; fi\n"
         + "z=$(zstat 2>/dev/null) && echo Z1 $z; :\n";
   }
 
@@ -265,14 +273,19 @@ final class TargetReclaim {
     String command = regionPrelude(context, app, mode) + baseline()
         + "operation=" + operation + "\ntoken=" + region.token + "\nlimit=" + limit + "\noffset=0\n"
         + (region.anonymous && mode != Mode.MARK_COLD ? "zram_only || { echo '匿名页换出需要仅使用 zRAM 的交换区。' >&2; exit 1; }\n" : "")
+        + "sample=$(process " + region.pid + " sample) || stale; echo VMA0 $sample\n"
         + "while [ \"$offset\" -lt \"$limit\" ]; do length=$((limit-offset)); [ \"$length\" -le 4194304 ] || length=4194304;\n"
         + "if ! same_members || ! cached_uid; then echo 'STOP 进程集合或缓存状态已变化。'; break; fi\n"
+        + (region.anonymous && mode != Mode.MARK_COLD
+            ? "zram_only || { echo 'STOP 活动交换设备已变化。'; break; }\n" : "")
         + "if ! answer=$(process " + region.pid + " range 2>&1); then echo \"STOP ${answer:-进程或映射发生变化。}\"; break; fi\n"
         + "set -- $answer; [ \"$#\" = 2 ] && [ \"$1\" = ACCEPT ] || { echo 'STOP 未能读取内核回执。'; break; };\n"
         + "case $2 in ''|*[!0-9]*) echo 'STOP 内核返回无效长度。'; break;; esac\n"
         + "[ \"$2\" -gt 0 ] && [ \"$2\" -le \"$length\" ] || { echo 'STOP 内核返回无效长度。'; break; };\n"
         + "offset=$((offset+$2)); [ \"$2\" = \"$length\" ] || { echo 'STOP 内核只接受了部分区间。'; break; }; done\n"
-        + "echo RANGE \"$offset\" \"$limit\"\n" + finalReadings();
+        + "echo RANGE \"$offset\" \"$limit\"\n"
+        + "if same_members && sample=$(process " + region.pid + " sample 2>/dev/null); then echo VMA1 $sample; fi\n"
+        + finalReadings();
     String output;
     try { output = Root.run(command, 90); }
     catch (IOException error) {
@@ -285,6 +298,16 @@ final class TargetReclaim {
 
   private static String change(long value) {
     return (value > 0 ? "+" : value < 0 ? "−" : "") + MainActivity.fmt(Math.abs(value));
+  }
+
+  private static long[] mappingSample(String[] row) {
+    if (row == null || row.length != 4) return null;
+    long size = Long.parseLong(row[1]);
+    long rss = Math.multiplyExact(Long.parseLong(row[2]), 1024L);
+    long swap = Math.multiplyExact(Long.parseLong(row[3]), 1024L);
+    if (size <= 0 || rss < 0 || swap < 0 || rss > size || swap > size)
+      throw new IllegalArgumentException("映射读数无效。");
+    return new long[] {size, rss, swap};
   }
 
   static Result report(int count, Mode mode, String output) throws IOException {
@@ -320,13 +343,19 @@ final class TargetReclaim {
         String summary = "原缓存进程已确认退出 " + (count - alive - unknown) + "/" + count + " 个。";
         if (unknown > 0) summary += "另有 " + unknown + " 个进程状态无法核验。";
         summary += current < 0 ? "当前同 UID 进程数不可用。" : "该 UID 当前有 " + current + " 个进程。";
-        String lifecycle = mode == Mode.FORCE_STOP
-            ? "已请求系统强行停止此包，通知、闹钟和后台唤醒可能中断，手动打开可再次使用。"
-            : "系统可能重新拉起应用，应用数据保留。";
-        return new Result(summary + lifecycle,
-            alive > 0 || unknown > 0 || current != 0);
+        boolean partial = alive > 0 || unknown > 0 || current != 0;
+        if (mode == Mode.FORCE_STOP) {
+          String[] state = fields.get("STOPPED");
+          boolean confirmed = state != null && state.length == 2 && "stopped=true".equals(state[1]);
+          summary += confirmed ? "系统已确认该用户的包处于强停状态，手动打开可再次使用。"
+              : "已提交强停请求，未确认该用户的包仍处于强停状态。";
+          return new Result(summary, partial || !confirmed);
+        }
+        return new Result(summary + "系统可能重新拉起应用，应用数据保留。", partial);
       }
       boolean incomplete;
+      Long mappingSaved = null;
+      boolean wholeMapping = false;
       StringBuilder text = new StringBuilder();
       if (isRange(mode)) {
         String[] row = fields.get("RANGE");
@@ -339,6 +368,19 @@ final class TargetReclaim {
         text.append("所选区间").append(mode == Mode.MARK_COLD ? "标冷" : "回收")
             .append("已受理 ").append(MainActivity.fmt(accepted)).append(" / ")
             .append(MainActivity.fmt(limit)).append("。此长度只表示内核收到的范围。").append(stop);
+        long[] beforeMap = mappingSample(fields.get("VMA0"));
+        long[] afterMap = mappingSample(fields.get("VMA1"));
+        if (beforeMap != null && afterMap != null && beforeMap[0] == afterMap[0] && limit <= beforeMap[0]) {
+          mappingSaved = beforeMap[1] - afterMap[1];
+          wholeMapping = accepted == beforeMap[0];
+          text.append("\n所选完整映射（").append(MainActivity.fmt(beforeMap[0])).append("）驻留 ")
+              .append(MainActivity.fmt(beforeMap[1])).append(" → ").append(MainActivity.fmt(afterMap[1]))
+              .append("，驻留减少量 ").append(change(mappingSaved)).append("。映射的逻辑交换量 ")
+              .append(MainActivity.fmt(beforeMap[2])).append(" → ").append(MainActivity.fmt(afterMap[2])).append("。");
+          if (!wholeMapping) text.append("读数包含本次请求区间以外的映射页。");
+        } else {
+          text.append("\n所选映射的前后读数不可比较。");
+        }
       } else if (mode == Mode.ART_GC) {
         int callbacks = Integer.parseInt(fields.get("GC")[1]);
         if (callbacks < 0 || callbacks > count) throw new IllegalArgumentException();
@@ -352,6 +394,7 @@ final class TargetReclaim {
         incomplete = done != count;
         text.append("内核已受理 ").append(done).append('/').append(count).append(" 个进程的请求。");
         if (incomplete) text.append("其余请求因状态变化或内核拒绝而中止。");
+        if (mode == Mode.FILE) text.append("整进程文件模式由内核按映射选择，部分映射可能含私有副本或脏页。");
       }
       Long saved = null;
       if (fields.containsKey("AFTER")) {
@@ -374,11 +417,13 @@ final class TargetReclaim {
         long added = after - before;
         text.append("\n整机 zRAM 物理用量 ").append(MainActivity.fmt(before)).append(" → ").append(MainActivity.fmt(after))
             .append("，增加量 ").append(change(added)).append("。");
-        if (saved != null && !incomplete && (mode == Mode.ANON || mode == Mode.RANGE_ANON))
-          text.append("\n粗略净收益 ").append(change(Math.subtractExact(saved, added))).append("（驻留减少量减去 zRAM 增加量）。");
+        Long estimate = mode == Mode.ANON ? saved : mode == Mode.RANGE_ANON && wholeMapping ? mappingSaved : null;
+        if (estimate != null && !incomplete)
+          text.append("\n粗略净收益 ").append(change(Math.subtractExact(estimate, added)))
+              .append(mode == Mode.ANON ? "（进程驻留减少量" : "（映射驻留减少量").append("减去整机 zRAM 增加量）。");
       }
       return new Result(text.append("\n快照会受同期系统活动影响。多进程 RSS 可能重复计入共享页。").toString(),
-          incomplete || saved == null || !measuredZram);
+          incomplete || saved == null || !measuredZram || (isRange(mode) && mappingSaved == null));
     } catch (RuntimeException malformed) {
       throw new IOException("未能核对操作后的完整系统结果。", malformed);
     }

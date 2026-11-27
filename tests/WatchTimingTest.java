@@ -55,6 +55,12 @@ public final class WatchTimingTest {
     WatchTiming day = new WatchTiming(false, 99, true, 1440, 0);
     eq(0, day.tick(1439*M, Double.NaN, -1));
     eq(I, day.tick(1440*M, Double.NaN, -1));
+    WatchTiming guarded = new WatchTiming(true, 80, true, 1, 0);
+    eq(0, guarded.tick(30_000, 90, -1, false));
+    eq(I, guarded.tick(M, 90, -1, false));
+    eq(0, guarded.tick(90_000, 90, -1, false));
+    eq(T | I, guarded.tick(2*M, 90, -1, true));
+    eq(0, guarded.tick(150_000, 95, 2*M, true));
     WatchTiming reboot = new WatchTiming(true, 90, false, 30, 0);
     eq(0, reboot.tick(M, 100, 40*M));
     eq(0, reboot.tick(2*M, 100, 40*M));

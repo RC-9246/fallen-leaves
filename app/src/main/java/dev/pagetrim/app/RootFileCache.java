@@ -46,15 +46,14 @@ final class RootFileCache {
     }
   }
 
-  // Each directory component is encoded in hex. A page selection also includes the
-  // cookie and the directory version, checked in the helper before seeking.
+  // Cursors identify the last raw filename and the verified directory snapshot.
   private static final String COMPONENT = "(?:[0-9a-f]{2}){1,255}";
   private static final String STAMP =
       "[0-9]{1,20}:[0-9]{1,20}:[0-9]{1,19}:-?[0-9]{1,19}:[0-9]{1,9}:-?[0-9]{1,19}:[0-9]{1,9}";
-  private static final String CURSOR = "[0-9]{1,20}_" + STAMP;
+  private static final String CURSOR = COMPONENT + "_" + STAMP;
 
   static List<Entry> list(Context context, String directory) throws Exception {
-    if (directory == null || directory.length() > 8500) throw new IOException("目录无效。");
+    if (directory == null || directory.length() > 9000) throw new IOException("目录无效。");
     String[] at = directory.split("@", -1);
     String folder = at[0];
     if (at.length > 2 || (at.length == 2 && !at[1].matches(CURSOR)))

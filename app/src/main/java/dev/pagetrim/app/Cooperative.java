@@ -32,6 +32,7 @@ final class Cooperative {
     OBJECT_POOL,
     IMAGE_CACHE,
     GPU_RESOURCES,
+    IMAGE_READER_BUFFERS,
     SQLITE_CACHE,
     DISCARDABLE_PRIVATE,
     ACTIVITY_INSTANCE,
@@ -78,7 +79,10 @@ final class Cooperative {
 
   static List<Owner> owners(Context context, Scope scope) throws Exception {
     List<Owner> owners = new ArrayList<>();
-    if (scope == Scope.MANAGED_GC || scope == Scope.NATIVE_ALLOCATOR || scope == Scope.SQLITE_CACHE)
+    if (scope == Scope.IMAGE_READER_BUFFERS && Build.VERSION.SDK_INT < 28) return owners;
+    if (scope == Scope.MANAGED_GC
+        || scope == Scope.SQLITE_CACHE
+        || (scope == Scope.NATIVE_ALLOCATOR && Build.VERSION.SDK_INT >= 28))
       owners.add(new Owner(null, "落叶（本进程）", ""));
     Set<String> eligible = new HashSet<>();
     for (StorageController.Entry app : StorageController.list(context)) eligible.add(app.pkg);

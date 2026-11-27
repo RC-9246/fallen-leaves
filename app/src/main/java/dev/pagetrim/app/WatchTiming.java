@@ -23,7 +23,13 @@ final class WatchTiming {
   long delay(long now) { return Math.max(1L, Math.min(nextInterval, nextSample) - now); }
   boolean isArmed() { return armed; }
 
+  boolean intervalDue(long now) { return intervalMs > 0 && now >= nextInterval; }
+
   int tick(long now, double used, long lastThreshold) {
+    return tick(now, used, lastThreshold, true);
+  }
+
+  int tick(long now, double used, long lastThreshold, boolean thresholdAllowed) {
     int reasons = 0;
     if (intervalMs > 0 && now >= nextInterval) {
       reasons |= INTERVAL;
@@ -45,7 +51,7 @@ final class WatchTiming {
     if (armed) {
       consecutive = Math.min(3, consecutive + 1);
       long cooldownStart = lastThreshold > now ? 0 : lastThreshold;
-      if (consecutive == 3 && (lastThreshold < 0 || now - cooldownStart >= COOLDOWN_MS)) {
+      if (consecutive == 3 && thresholdAllowed && (lastThreshold < 0 || now - cooldownStart >= COOLDOWN_MS)) {
         reasons |= THRESHOLD;
         armed = false;
         consecutive = 0;

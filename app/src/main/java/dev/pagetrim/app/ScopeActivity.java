@@ -46,13 +46,15 @@ public final class ScopeActivity extends Activity {
     SYNC(Group.FILE, "单独写回选中文件", "需要文档写授权，仅同步已有数据，不截断文件。可能增加存储 I/O。"),
     ROOT_FILE(Group.FILE, "真实下载目录文件页 · Root", "从当前用户的真实 Download 目录重新选择普通文件，直接对该文件描述符核验和逐出。"),
     RANGE_ANON(TargetReclaim.Mode.RANGE_ANON, "分段回收私有匿名页", "选择一个内核列出的私有匿名映射，分批尝试换出。"),
-    RANGE_FILE(TargetReclaim.Mode.RANGE_FILE, "分段回收文件映射", "只扫描所选映射的前一段，最多按本次预算处理。"),
+    RANGE_FILE(TargetReclaim.Mode.RANGE_FILE, "分段回收文件映射", "仅选择当前无脏页、匿名副本及交换页的可重读文件映射，每批重查。"),
     MARK_COLD(TargetReclaim.Mode.MARK_COLD, "标冷所选内存段", "通过支持的远程内存建议接口降低热度。标记本身可能释放零页。"),
     PAGEOUT(TargetReclaim.Mode.PAGEOUT, "逐出所选内存段", "请求现代内核对单个映射的一段主动逐出。"),
     ART_GC(TargetReclaim.Mode.ART_GC, "请求缓存应用 ART 回收", "Android 11 特定框架诊断路径可能触发 GC；堆内空位可能留给该应用复用。"),
     LAZY_FREE(TargetReclaim.Mode.LAZY_FREE, "读取可丢弃匿名页", "只读汇总选中进程的 LazyFree。单个聚合值不能定位可丢弃地址。"),
     DENTRY(KernelScopes.Key.DENTRY),
     INODE(KernelScopes.Key.INODE),
+    F2FS_INODE(KernelScopes.Key.F2FS_INODE),
+    EXT4_INODE(KernelScopes.Key.EXT4_INODE),
     ION_POOL(KernelScopes.Key.ION_POOL),
     BINDER_POOL(KernelScopes.Key.BINDER_POOL),
     KGSL_POOL(KernelScopes.Key.KGSL_POOL),
@@ -72,6 +74,7 @@ public final class ScopeActivity extends Activity {
     NATIVE_ALLOCATOR(Cooperative.Scope.NATIVE_ALLOCATOR, "归还原生分配器空页", "让实际拥有分配器的应用发起请求。"),
     OBJECT_POOL(Cooperative.Scope.OBJECT_POOL, "释放应用对象池", "仅由应用释放确认可重建的对象。"),
     IMAGE_CACHE(Cooperative.Scope.IMAGE_CACHE, "释放图片内存缓存", "由资源所有者选择可丢弃的图片和解码缓存。"),
+    IMAGE_READER_BUFFERS(Cooperative.Scope.IMAGE_READER_BUFFERS, "释放图像队列空闲缓冲", "需 Android 9 及接入的资源所有者。保留正在使用和已排队的图像。"),
     GPU_RESOURCES(Cooperative.Scope.GPU_RESOURCES, "释放可重建的图形资源", "由宿主核验未被使用的纹理和图形资源，并负责重建。"),
     SQLITE_CACHE(Cooperative.Scope.SQLITE_CACHE, "释放 SQLite 内存", "由本进程或合作应用向自己的 SQLite 请求释放缓存。"),
     DISCARDABLE_PRIVATE(Cooperative.Scope.DISCARDABLE_PRIVATE, "归还已作废的私有页", "应用确认内容作废后，可主动放弃内存。"),
@@ -84,7 +87,7 @@ public final class ScopeActivity extends Activity {
     RESTORE_SESSION(Cooperative.Scope.RESTORE_SESSION, "恢复应用会话", "由同一所有者恢复它保存的会话。"),
     AUDIT(Group.REVIEW, "复核内核接口", "读取设备当前状态并列出每一项支持条件。"),
     SNAPSHOT(Group.REVIEW, "对照三阶段运存", "手动采集动作前、动作后和切回后的整机运存、换页、缺页及可用的 PSI。"),
-    FRAMES(Group.REVIEW, "查看应用帧时长", "读取选定应用的近期 HWUI 帧记录，显示中位数和 P95。"),
+    FRAMES(Group.REVIEW, "查看应用帧时长", "可查看近期 HWUI 帧或只统计标记起点后绘制的帧，显示中位数和 P95。"),
     FORCE_STOP(Group.LIFE, "强行停止缓存应用", "会影响后台服务与通知；再次手动启动前，包可能保持停止状态。"),
     FREEZE(Group.LIFE, "短暂冻结缓存进程", "在活动管理器支持时，向选中的单进程应用提交两秒非黏性冻结和解除请求。"),
     SUSPEND(Group.LIFE, "挂起选定应用", "Android 将限制该应用的启动与通知，直到手动解除挂起。恢复入口始终可用。"),
@@ -468,10 +471,23 @@ public final class ScopeActivity extends Activity {
           new AlertDialog.Builder(this)
               .setTitle(f.title)
               .setItems(
-                  labels, (d, i) -> record(f, () -> DeviceReview.frameStats(this, apps.get(i).pkg)))
+                  labels, (d, i) -> frameOptions(f, apps.get(i).pkg))
               .setNegativeButton("取消", null)
               .show();
         });
+  }
+
+  private void frameOptions(Feature feature, String pkg) {
+    if (!enabled(feature)) return;
+    new AlertDialog.Builder(this)
+        .setTitle(feature.title)
+        .setItems(new String[]{"查看近期帧", "标记本次起点", "查看起点后的新帧"}, (dialog, choice) ->
+            record(feature, () -> {
+              if (choice == 1) return DeviceReview.markFrames(this, pkg);
+              if (choice == 2) return DeviceReview.frameStatsSince(this, pkg);
+              return DeviceReview.frameStats(this, pkg);
+            }))
+        .setNegativeButton("取消", null).show();
   }
 
   private void chooseTarget(Feature f) {

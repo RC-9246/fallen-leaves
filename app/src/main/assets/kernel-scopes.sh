@@ -6,6 +6,13 @@ partial_result() { printf 'PARTIAL\n%s\n' "$*"; exit 0; }
 done_result() { printf 'DONE\n%s\n' "$*"; exit 0; }
 fail() { printf '%s\n' "$*" >&2; exit 1; }
 number() { case "$1" in ''|*[!0-9]*) return 1;; *) return 0;; esac; }
+# Android mksh compares integers in a signed 32-bit domain. Clamp kernel
+# counters before shell comparisons so large values cannot wrap past a limit.
+cap_count() { awk -v n="$1" -v cap="$2" 'BEGIN {if(n !~ /^[0-9]+$/) exit 1; print (n+0>cap+0 ? cap : n+0)}'; }
+kernel_at_least() {
+  uname -r | awk -F. -v major="$1" -v minor="$2" '$1~/^[0-9]+$/ && $2~/^[0-9]+$/ &&
+    ($1+0>major || ($1+0==major && $2+0>=minor)) {ok=1} END{exit !ok}'
+}
 numfile() {
   # SLUB can annotate its first (total) field with per-node counts.
   awk 'NR==1 && $1 ~ /^[0-9]+$/ {print $1; ok=1} END {if(!ok) exit 1}' "$1" 2>/dev/null
@@ -20,14 +27,25 @@ debug_mount() {
 zphys() { awk 'NR==1 && $3~/^[0-9]+$/ {print $3; ok=1} END{if(!ok) exit 1}' mm_stat 2>/dev/null || echo '?'; }
 
 slub() {
-  [ "$scope" = DENTRY ] && cache=dentry || cache=inode_cache
+  fs=''
+  case "$scope" in
+    DENTRY) cache=dentry;;
+    INODE) cache=inode_cache;;
+    F2FS_INODE) fs=f2fs; cache=f2fs_inode_cache;;
+    EXT4_INODE) fs=ext4; cache=ext4_inode_cache;;
+  esac
+  if [ -n "$fs" ]; then
+    awk -v fs="$fs" '$3==fs {found=1; exit} END{exit !found}' /proc/mounts ||
+      info "当前未见已挂载的 $fs 文件系统。"
+  fi
   cd -P "/sys/kernel/slab/$cache" 2>/dev/null || info "内核未导出 $cache 的 sysfs 目录。"
   control shrink || info "$cache 没有可写的 shrink 接口。"
   before=$(readn slabs); partial=$(readn partial); aliases=$(readn aliases)
+  [ "$aliases" = 0 ] || info "$cache 的别名数为 ${aliases}，无法确认独立收缩范围。"
   ready "$cache 空 slab 收缩接口可写。slab 总数 ${before}，部分占用 slab ${partial}，缓存别名数 ${aliases}。"
   write_value shrink 1
   after=$(readn slabs); remaining=$(readn partial)
-  done_result "$cache 已提交收缩。slab 总数 $before → ${after}，部分占用 slab $partial → ${remaining}。不同分配阶数、并发和别名使独立物理收益无法核验。"
+  done_result "$cache 已提交收缩。slab 总数 $before → ${after}，部分占用 slab $partial → ${remaining}。部分占用计数并非可释放页数，单次物理收益无法独立核验。"
 }
 
 driver_pool() {
@@ -43,8 +61,8 @@ driver_pool() {
       if [ -n "$root" ] && cd -P "$root/ion/heaps" 2>/dev/null && control system_shrink; then
         n=$(numfile system_shrink) || info "$stats 不能核对普通系统堆的对象计数。"
         ready "$stats 普通系统堆公开定向入口，目前可扫描 $n 个驱动对象。"
-        [ "$n" -gt 0 ] || done_result '普通系统堆实际可扫描对象为 0，本次未扫描。'
-        [ "$n" -le 256 ] || n=256
+        n=$(cap_count "$n" 256) || fail '无法核对扫描数量。'
+        [ "$n" != 0 ] || done_result '普通系统堆实际可扫描对象为 0，本次未扫描。'
         write_value system_shrink "$n"
         done_result "普通系统堆请求扫描 $n 个对象。操作后可扫描对象 $(readn system_shrink)。全机同期活动影响计数。"
       fi
@@ -61,8 +79,8 @@ driver_pool() {
     n=$(awk '$1==0 && $2~/^[0-9]+$/ {print $2; exit}' count) || info "$name 的计数无法读取。"
     case "$n" in '') n=0;; esac
     ready "${stats}。驱动 $name 在全局节点 0 有 $n 个可扫描对象。"
-    [ "$n" -gt 0 ] || done_result "$name 全局节点 0 可扫描对象为 0。"
-    [ "$n" -le 256 ] || n=256
+    n=$(cap_count "$n" 256) || fail '无法核对扫描数量。'
+    [ "$n" != 0 ] || done_result "$name 全局节点 0 可扫描对象为 0。"
     write_value scan "0 0 $n"
     remaining=$(awk '$1==0 && $2~/^[0-9]+$/ {print $2; seen=1;exit} END{if(!seen)print 0}' count) || remaining='?'
     done_result "已请求 $name 扫描 $n 个对象；该节点现有 $remaining 个可扫描对象。对象数不能直接换算为释放字节。"
@@ -126,10 +144,10 @@ mglru() {
   ' "$file")
   [ -n "$row" ] || info '目前没有核验到根内存组节点 0 中可回收的最老代文件页。'
   set -- $row; group=$1; gen=$2; n=$3
-  cap=$((4194304/page)); [ "$n" -le "$cap" ] || n=$cap
-  ready "根内存组 ${group}、节点 0、最老代 $gen 有 $3 个文件页；本次请求上限 $n 页。"
+  n=$(cap_count "$n" "$((4194304/page))") || info '无法核对 MGLRU 文件页数量。'
+  ready "根内存组 ${group}、节点 0、最老代 $gen 估计有 $3 个文件页；本次回收目标 $n 页。"
   write_value "$file" "- $group 0 $gen 0 $n"
-  done_result "已请求在节点 0 从代 $gen 回收最多 $n 个文件页。内核没有返回本次独占释放量。"
+  done_result "已请求在节点 0 从代 $gen 回收 $n 个文件页。内核分批扫描，实际回收可能高于或低于目标值。"
 }
 
 # In timed modes, retain all system quotas/settings and never stop an already
@@ -181,12 +199,33 @@ trial() {
 # Operate on one active zRAM swap device per invocation. Never establish new
 # swap, reset a device or grant extra writeback credit. Only the separate
 # ZRAM_MARK_IDLE action establishes a new observation window for the whole pool.
+active_swap_device() (
+  set -f
+  IFS=: read -r major minor < dev || exit 1
+  number "$major" && number "$minor" && [ "$major" != 0 ] || exit 1
+  expected=$(printf '%x:%x' "$major" "$minor") || exit 1
+  paths=$(awk 'NR>1 && $2=="partition" && $1 ~ /^\// {print $1}' /proc/swaps) || exit 1
+  for path in $paths; do
+    # A basename may belong to a regular swap file; aliases can also point
+    # to the actual zRAM device. Check rdev and the S_IFBLK mode bits.
+    actual=$(stat -L -c '%t:%T:%f' "$path" 2>/dev/null) || continue
+    case "$actual" in "$expected":6???) exit 0;; esac
+  done
+  exit 1
+)
+
 zram_scope() {
   reasons=''
+  if [ "$scope" != ZRAM_DEDUP ]; then
+    service=$(getprop init.svc.mmd 2>/dev/null); configured=$(getprop mmd.zram.enabled 2>/dev/null)
+    case "$service:$configured" in
+      running:*|restarting:*|starting:*|stopping:*|*:true|*:1|*:yes|*:on)
+        info 'mmd 服务活跃或已配置托管。空闲标记、二次压缩及写回由系统维护，采用其时序和写入预算。';;
+    esac
+  fi
   for dir in /sys/block/zram[0-9]*; do
     id=${dir##*/}; number "${id#zram}" && [ -d "$dir" ] || continue
-    awk -v name="$id" 'NR>1 {n=split($1,a,"/"); if(a[n]==name) found=1} END{exit !found}' /proc/swaps || continue
-    cd -P "$dir" || continue
+    cd -P "$dir" && active_swap_device || continue
     if [ "$scope" = ZRAM_DEDUP ]; then
       same=$(awk 'NF>=6{print $6}' mm_stat 2>/dev/null)
       reasons="$reasons ${id}：去重设置 $(readn use_dedup)，同值页 ${same:-?}。"
@@ -194,40 +233,49 @@ zram_scope() {
     fi
     size=$(numfile disksize) && [ "$size" != 0 ] || continue
     before=$(zphys)
+    complete=1
     if [ "$scope" = ZRAM_MARK_IDLE ]; then
-      if [ "$(getprop init.svc.mmd 2>/dev/null)" = running ]; then info 'mmd 正在维护标记时序，由系统协调空闲页标记。'; fi
       if ! control idle; then reasons="$reasons $id 未开放 idle 标记接口。"; continue; fi
       ready "$id 当前物理占用 $before B。操作将标记该设备所有已存页，建立新的空闲观察起点；标记本身释放 0 B。"
       write_value idle all
       done_result "$id 已提交全设备空闲标记。此次只标记、不执行压缩或写回；后续访问会改变空闲状态。"
     fi
     if [ "$scope" = ZRAM_RECOMPRESS ]; then
-      if ! control recompress || ! grep -Eq '^#1:[[:space:]]' recomp_algorithm 2>/dev/null; then
+      algorithm=$(awk '$1=="#1:" {for(i=2;i<=NF;i++) if($i~/^\[[A-Za-z0-9_-]+\]$/) {
+          algo=substr($i,2,length($i)-2); n++}} END{if(n!=1)exit 1; print algo}' recomp_algorithm 2>/dev/null)
+      if ! control recompress || [ -z "$algorithm" ]; then
         reasons="$reasons $id 缺少可写入口或优先级 1 的次级算法。"; continue
       fi
       # Older zRAM silently ignores unknown keys, including max_pages.
       # Use a bounded operation only on upstream ABI generations that parse it.
-      if ! uname -r | awk -F. '$1~/^[0-9]+$/ && $2~/^[0-9]+$/ && ($1+0>6 || ($1+0==6 && $2+0>=12)) {ok=1} END{exit !ok}'; then
-        reasons="$reasons $id 提供二次压缩，但未能核验该内核会限制扫描页数。"; continue
-      fi
-      ready "$id 当前物理占用 $before B。使用已有优先级 1 算法，请求最多 256 个难压且已标冷的页。"
-      write_value recompress 'type=huge_idle priority=1 max_pages=256'
+      if kernel_at_least 6 12; then selector=priority=1
+      elif kernel_at_least 6 10; then selector="algo=$algorithm"
+      else reasons="$reasons $id 提供二次压缩，但未能核验该内核会限制尝试压缩的页数。"; continue; fi
+      ready "$id 当前物理占用 $before B。使用已有优先级 1 算法 $algorithm，最多尝试压缩 256 个难压且已标冷的页，筛选时可能遍历设备。"
+      (printf '%s\n' "type=huge_idle $selector max_pages=256" > recompress) 2>/dev/null || complete=0
       note='已请求二次压缩。'
     else
       backing=$(cat backing_dev 2>/dev/null); credit=$(numfile writeback_limit)
       if ! control writeback || [ -z "$backing" ] || [ "$backing" = none ] ||
           [ "$(readn writeback_limit_enable)" != 1 ] || ! number "$credit" ||
-          ! awk -v c="$credit" 'BEGIN{exit !(c>=1 && c<=2048)}'; then
-        reasons="$reasons $id 需要已配置的后备设备及 1–2048 个 4 KiB 单位的现有写入额度。"; continue
+          ! awk -v c="$credit" -v p="$page" 'BEGIN{exit !(p>=4096 && p%4096==0 && c>=1 && c<=2048 && c%(p/4096)==0)}'; then
+        reasons="$reasons $id 需要已配置后备设备及不超过 8 MiB、按硬件页对齐的非零剩余写入额度。"; continue
       fi
+      if kernel_at_least 6 16; then mode=type=huge_idle
+      elif kernel_at_least 5 19; then mode=huge_idle
+      else reasons="$reasons $id 未能核验驱动支持仅写回同时难压且已标冷的页。"; continue; fi
       writes=$(awk 'NF>=3{print $3}' bd_stat 2>/dev/null)
       ready "$id 已配置后备设备，既有剩余额度 $((credit * 4096)) B。只写回难压且已标冷页，设备原来已写 ${writes:-?} 个 4 KiB 单位。"
-      write_value writeback huge_idle
+      # Older drivers can fail after successfully writing some pages, including
+      # when the existing quota reaches zero before the end of the scan.
+      (printf '%s\n' "$mode" > writeback) 2>/dev/null || complete=0
       later=$(awk 'NF>=3{print $3}' bd_stat 2>/dev/null)
       note="已请求写回。设备写入计数（4 KiB 单位）${writes:-?} → ${later:-?}。"
     fi
     [ "$(readn disksize)" = "$size" ] || fail '已提交但设备容量变化，结果不可比较。'
-    done_result "$id $note 物理分配 $before → $(zphys) B；整机并发活动也会改变它。"
+    report="$id $note 物理分配 $before → $(zphys) B；整机并发活动也会改变它。"
+    [ "$complete" = 1 ] || partial_result "内核未确认全部请求，部分页可能已处理。$report"
+    done_result "$report"
   done
   info "${reasons:-未找到合适的活跃 zRAM 交换设备。}"
 }
@@ -248,14 +296,18 @@ memcg() {
   control memory.reclaim || info '该叶组未开放 memory.reclaim。'
   is_leaf_group() {
     grep -Eq '^nr_descendants[[:space:]]+0$' cgroup.stat || return 1
-    actual=$(cat cgroup.procs) || return 1
-    n=0
-    for p in $actual; do
-      case " $pids " in *" $p "*) ;; *) return 1;; esac
-      n=$((n+1))
+    # The cgroup ABI permits duplicate PIDs during membership churn. Row count
+    # alone could mistake a duplicate for another process that moved away.
+    awk -v expected="$pids" 'BEGIN {
+        n=split(expected, members, " "); for(i=1;i<=n;i++) wanted[members[i]]=1
+      }
+      NF!=1 || $1 !~ /^[0-9]+$/ || !($1 in wanted) || seen[$1]++ {bad=1; exit}
+      END {exit (bad || NR != n)}' cgroup.procs || return 1
+    same_members && cached_uid || return 1
+    for p in $pids; do
+      [ "$(awk -F: '$1=="0" && $2=="" {print $3}' "/proc/$p/cgroup")" = "$cg" ] &&
+        process "$p" check || return 1
     done
-    [ "$n" = "$count" ] && same_members && cached_uid || return 1
-    for p in $pids; do process "$p" check || return 1; done
   }
   before=$(readn memory.current); swap0=$(readn memory.swap.current)
   is_leaf_group || info '目标叶组或缓存进程身份发生变化。'
@@ -269,7 +321,7 @@ memcg() {
 }
 
 case "$scope" in
-  DENTRY|INODE) slub;;
+  DENTRY|INODE|F2FS_INODE|EXT4_INODE) slub;;
   ION_POOL|BINDER_POOL|KGSL_POOL) driver_pool;;
   GPU_PROCESS) gpu_process;;
   MEMCG) memcg;;
@@ -279,7 +331,8 @@ case "$scope" in
   MMD_POLICY)
     service=$(getprop init.svc.mmd 2>/dev/null)
     sdk=$(getprop ro.build.version.sdk 2>/dev/null)
-    detail="Android API ${sdk:-?}，mmd 服务状态 ${service:-未报告}。"
+    configured=$(getprop mmd.zram.enabled 2>/dev/null)
+    detail="Android API ${sdk:-?}，mmd 服务状态 ${service:-未报告}，zRAM 托管覆盖值 ${configured:-未显式配置}。"
     if [ "$service" = running ]; then
       budget=$(getprop mmd.zram.writeback.max_bytes_per_day 2>/dev/null)
       recompress=$(getprop mmd.zram.recompression.enabled 2>/dev/null)

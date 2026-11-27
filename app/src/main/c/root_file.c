@@ -104,63 +104,81 @@ static int stamp(char *buf,size_t n,const struct stat *s) {
     return used>0 && (size_t)used<n;
 }
 
+struct listed_entry { char name[NAME_MAX+1]; struct stat st; };
+
+static void encode_name(const char *name, char hex[2*NAME_MAX+1]) {
+    static const char digits[]="0123456789abcdef";
+    size_t i=0;
+    for (; name[i]; i++) {
+        unsigned char byte=(unsigned char)name[i];
+        hex[2*i]=digits[byte>>4]; hex[2*i+1]=digits[byte&15];
+    }
+    hex[2*i]=0;
+}
+
 static int list_folder(struct folder *d,const char *cursor) {
-    struct stat before,after; char id[192];
+    struct stat before,after; char id[192],last[NAME_MAX+1]="";
     if (fstat(d->fd,&before) || !stamp(id,sizeof(id),&before)) return issue("无法核对目录状态。");
-    long cookie=0;
     if (strcmp(cursor,"-")) {
-        char *end;errno=0;cookie=strtol(cursor,&end,10);
-        if (errno || cookie<0 || end==cursor || *end!='_' || strcmp(end+1,id))
+        const char *end=strchr(cursor,'_');
+        if (!end || !decode(cursor,(size_t)(end-cursor),last) || strcmp(end+1,id))
             return issue("下载目录已变化，请重新进入。");
     }
-    // fdopendir assumes ownership. Keep the original pin for fstat and identity checks.
     int clone=dup(d->fd);
     if (clone<0) return issue("无法打开目录。");
     DIR *dir=fdopendir(clone);
     if (!dir) {close(clone);return issue("无法读取目录。");}
-    if (cookie) seekdir(dir,cookie);
-    // Keep unverified rows out of both the result and any error/history message.
-    const size_t capacity=PAGE_ENTRIES*(2*NAME_MAX+256U)+256U;
-    char *output=malloc(capacity);
-    if (!output) {closedir(dir);return issue("无法暂存目录清单。");}
-    size_t used=0,rows=0;int failure=0;
+    // A cursor crosses helper processes. Use the last raw filename, not a DIR-stream cookie.
+    // Keep only the smallest page plus one qualifying entry to establish whether more exist.
+    struct listed_entry *storage=calloc(PAGE_ENTRIES+1,sizeof(*storage));
+    if (!storage) {closedir(dir);return issue("无法暂存目录清单。");}
+    struct listed_entry *rows[PAGE_ENTRIES+1];
+    size_t count=0;
+    int failure=0;
     for (;;) {
-        errno=0;struct dirent *e=readdir(dir);
-        if (!e) {failure=errno;break;}
-        if (!strcmp(e->d_name,".") || !strcmp(e->d_name,"..")) continue;
-        struct stat f;
-        if (fstatat(d->fd,e->d_name,&f,AT_SYMLINK_NOFOLLOW) || !wanted_type(&f) || f.st_dev!=d->device) continue;
-        char identity[192];
-        if (!stamp(identity,sizeof(identity),&f)) continue;
-        char hex[2*NAME_MAX+1];
-        size_t length=strlen(e->d_name);
+        errno=0;struct dirent *entry=readdir(dir);
+        if (!entry) {failure=errno;break;}
+        const char *name=entry->d_name;
+        if (!strcmp(name,".") || !strcmp(name,"..") || strcmp(name,last)<=0) continue;
+        if (count>PAGE_ENTRIES && strcmp(name,rows[PAGE_ENTRIES]->name)>=0) continue;
+        struct stat st;
+        if (fstatat(d->fd,name,&st,AT_SYMLINK_NOFOLLOW) || !wanted_type(&st) || st.st_dev!=d->device)
+            continue;
+        size_t length=strlen(name);
         if (length>NAME_MAX) {failure=EOVERFLOW;break;}
-        static const char digits[]="0123456789abcdef";
-        for (size_t i=0;i<length;i++) {
-            unsigned char c=(unsigned char)e->d_name[i];
-            hex[i*2]=digits[c>>4]; hex[i*2+1]=digits[c&15];
+        size_t at;
+        struct listed_entry *next;
+        if (count>PAGE_ENTRIES) {
+            at=PAGE_ENTRIES;
+            next=rows[at];
+        } else {
+            at=count;
+            next=&storage[count++];
         }
-        hex[length*2]=0;
-        int bytes=snprintf(output+used,capacity-used,"%c %s %jd %s\n",
-            S_ISDIR(f.st_mode)?'D':'F',hex,(intmax_t)f.st_size,identity);
-        if (bytes<0 || (size_t)bytes>=capacity-used) {failure=EOVERFLOW;break;}
-        used+=(size_t)bytes;
-        if (++rows==PAGE_ENTRIES) {
-            long next=telldir(dir);
-            if (next<=0) {failure=EIO;break;}
-            int bytes=snprintf(output+used,capacity-used,"N %ld_%s\n",next,id);
-            if (bytes<0 || (size_t)bytes>=capacity-used) failure=EOVERFLOW;
-            else used+=(size_t)bytes;
-            break;
+        while (at>0 && strcmp(name,rows[at-1]->name)<0) {
+            rows[at]=rows[at-1];
+            at--;
         }
+        memcpy(next->name,name,length+1);
+        next->st=st;
+        rows[at]=next;
     }
     closedir(dir);
     if (failure || fstat(d->fd,&after) || !leaf_same_stat(&before,&after) || !at_location(d->fd,d->path)) {
-        free(output);return issue("目录变化或读取失败，请重新选择。");
+        free(storage);return issue("目录变化或读取失败，请重新选择。");
     }
-    size_t sent=fwrite(output,1,used,stdout);
-    free(output);
-    return sent==used ? 0 : issue("未能输出完整的目录清单。");
+    char hex[2*NAME_MAX+1], identity[192];
+    for (size_t i=0;i<count && i<PAGE_ENTRIES;i++) {
+        const struct stat *st=&rows[i]->st;
+        encode_name(rows[i]->name,hex);
+        if (!stamp(identity,sizeof(identity),st) ||
+            printf("%c %s %jd %s\n",S_ISDIR(st->st_mode)?'D':'F',hex,(intmax_t)st->st_size,identity)<0) {
+            free(storage);return issue("未能输出完整的目录清单。");
+        }
+    }
+    if (count>PAGE_ENTRIES && printf("N %s_%s\n",hex,id)<0) failure=1;
+    free(storage);
+    return failure || fflush(stdout)!=0 ? issue("未能输出完整的目录清单。") : 0;
 }
 
 static int evict_file(struct folder *d,const char *hex,const char *identity) {

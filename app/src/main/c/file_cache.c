@@ -86,7 +86,7 @@ Java_dev_pagetrim_app_FilesScope_operate(JNIEnv *env, jclass unused, jint fd, ji
         return fail(env, "系统页大小无法核实。", 0);
     const off_t max_sample = LEAF_SAMPLE_LIMIT;
     size_t bytes = before.st_size < max_sample ? (size_t)before.st_size : (size_t)max_sample;
-    jlong result[] = { before.st_size, page_size, (jlong)bytes, -1, -1, 0 };
+    jlong result[] = { before.st_size, page_size, (jlong)bytes, -1, -1, 0, storage == 2 };
     if (mode == SYNC_FILE) {
         int rc;
         do { rc = fsync(fd); } while (rc != 0 && errno == EINTR);

@@ -85,7 +85,7 @@ public final class MainActivity extends Activity {
       if (config != null) pendingMonitor = new WatchConfig(
           config.getBoolean("threshold"), config.getInt("used"), config.getBoolean("interval"),
           config.getInt("minutes"), config.getBoolean("root")
-              ? WatchService.Mode.ROOT_RECLAIM : WatchService.Mode.ALERT_ONLY);
+              ? WatchService.Mode.ROOT_RECLAIM : WatchService.Mode.ALERT_ONLY, config.getBoolean("lowMemoryOnly"));
     }
     draw();
     if (state == null) {
@@ -171,6 +171,7 @@ public final class MainActivity extends Activity {
       config.putInt("used", pendingMonitor.usedPercent);
       config.putBoolean("interval", pendingMonitor.intervalEnabled);
       config.putInt("minutes", pendingMonitor.intervalMinutes);
+      config.putBoolean("lowMemoryOnly", pendingMonitor.lowMemoryOnly);
       config.putBoolean("root", pendingMonitor.mode == WatchService.Mode.ROOT_RECLAIM);
       b.putBundle("pendingMonitor", config);
     }
