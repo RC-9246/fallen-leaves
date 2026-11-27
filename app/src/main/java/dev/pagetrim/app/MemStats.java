@@ -78,7 +78,7 @@ public final class MemStats {
     return new MemStats(values, total, available, pressure);
   }
 
-  private static void readMeminfo(BufferedReader reader, Map<String, Long> values)
+  static void readMeminfo(BufferedReader reader, Map<String, Long> values)
       throws IOException {
     String line;
     while ((line = reader.readLine()) != null) {

@@ -28,6 +28,19 @@ The usage threshold requires three qualifying 30-second samples and has a 30-min
 
 On a OnePlus 8T running HydrogenOS 11, if the monitoring notification stays visible but scheduled actions stop appearing in History while the screen is locked, choose **Settings → Battery → Battery optimization → 落叶 (Fallen Leaves) → Don’t optimize**.
 
+## Root-free tools in 1.5.0
+
+| Open | What it does |
+| --- | --- |
+| Memory → Automatic monitoring | Select cleanup of Fallen Leaves itself and independently enable Java GC, SQLite memory release, or a native allocator purge (Android 9+). Use a timer or an occupancy threshold and optionally require Android’s low-memory signal. History records the SQLite byte count and the outcome of the other requests. Reminder and root modes are still available. |
+| Memory → Root-free diagnostics | Inspect Android’s low-memory threshold and headroom, swap usage, major faults and memory-stall counters. Mark a baseline, run a workload in another app, then refresh for device-wide deltas. On Android 11+, recent exit reasons cover Fallen Leaves’ own processes. Unavailable counters are labeled. |
+| Memory → App usage and background management | With optional Usage Access, compare cache and storage usage with last use, filter by 7 or 30 days or no record in 90 days, and check cache size again after visiting system settings. On Android 8–13, a separate switch lets you request that Android end one selected user app’s eligible background processes. Its next launch may be cold. The API returns no process count or reclaimed bytes. Android 14+ restricts the call to the caller’s own processes. [Android process management](https://developer.android.com/reference/android/app/ActivityManager#killBackgroundProcesses(java.lang.String)) |
+| Memory → File pages and app cooperation | Use the file and cooperation switches from one root-free menu. Inspect or advise clean-page eviction for up to 32 selected local documents, with a result per file. File contents are preserved. A shared storage view can conceal backing-page residency. |
+| Storage → Review a folder | Choose a local folder using the system picker, see its largest files, and optionally list old temporary files or cache files. Deletion requires individual selection and confirmation. Eligible files have a single configured extension (`.tmp`, `.temp`, or `.cache`), are at least seven days old and lie under a recognized cache or temporary directory. APKs and recognized ZIP archives are excluded. Reported bytes are file lengths. [Android directory access](https://developer.android.com/training/data-storage/shared/documents-files) |
+| Storage → Volumes and storage management | Inspect available and total space on the data partition and each accessible shared volume, then open the system storage manager. Shared views can refer to the same disk and are displayed separately. |
+
+Android 11 tests used ordinary app UIDs and synthetic files. A confirmed background-process request ended the selected test process. A cache comparison measured a 2 MiB decrease after a fixture cleared its own cache. Folder cleanup removed one selected 10-byte file, skipped a file changed after preview, and preserved disguised ZIPs and APKs.
+
 ## Extended reclaim scopes
 
 Open **运存 → 扩展回收范围**. Each of the five new scopes has its own saved switch, initially off. Turn on a scope and use its individual action. The app asks you to pick a cached app each time a target is needed. The tile and automatic monitor retain their file-page scope. Four further switches control the original global file pages, kernel objects, voluntary app trim and old diagnostics, including their existing entry points. These four start enabled on upgrade.
@@ -65,7 +78,7 @@ The optional **仅在 Android 报告低内存时自动回收** switch in **自�
 
 **Memory.** The cold-launch and force-stop actions can end cached processes. Process selection excludes system apps, itself, detectable VPN service apps and shared app identities. Target reclaim compares the selected process group. Pool and dashboard readings are system-wide. A change in available RAM cannot be attributed solely to a reclaim request. Frequently discarding useful file pages can make the next launch slower. Swap usage is logical space and does not measure the physical RAM consumed by compressed swap.
 
-**Storage.** Direct deletion is limited to recognized filenames in Android native crash dumps, ANR traces, vendor WLAN dumps and numbered OnePlus diagnostic directories. Candidates must be regular files with one hard link and a modification time at least seven days old. Before removal, the app rechecks the canonical path, file type, age and file metadata against the preview and skips entries that fail those checks. Removing a report also removes evidence that could help diagnose a crash. The exact filename rules are in [Diagnostics.java](app/src/main/java/dev/pagetrim/app/Diagnostics.java).
+**Root diagnostic cleanup.** Eligible files have recognized filenames in Android native crash dumps, ANR traces, vendor WLAN dumps and numbered OnePlus diagnostic directories. Candidates must be regular files with one hard link and a modification time at least seven days old. Before removal, the app rechecks the canonical path, file type, age and file metadata against the preview and skips entries that fail those checks. Removing a report also removes evidence that could help diagnose a crash. The exact filename rules are in [Diagnostics.java](app/src/main/java/dev/pagetrim/app/Diagnostics.java).
 
 Downloads, saved APKs, photos, chats and other apps' private data are outside the diagnostic cleaner's scope. It does not recursively empty app caches. The app requests package visibility to build local app lists. It has no Internet permission, third-party runtime dependencies or ads. The last 30 actions are kept locally.
 
@@ -75,6 +88,7 @@ Use JDK 17, Android SDK Platform 34, Build Tools 34.0.0, Android NDK r27c (27.2.
 
 ```sh
 ./tests/test-policy.sh
+python3 tests/test-public-memory.py
 python3 tests/test-target.py
 python3 tests/test-kernel-scopes.py
 python3 tests/test-suspension.py

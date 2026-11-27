@@ -8,3 +8,5 @@ javac -encoding UTF-8 -d "$tmp" "$src/Diagnostics.java" "$src/Root.java" "$src/R
 java -cp "$tmp" dev.pagetrim.app.DiagnosticsPolicyTest
 javac -encoding UTF-8 -d "$tmp" "$src/WatchTiming.java" "$base/tests/WatchTimingTest.java"
 java -cp "$tmp" dev.pagetrim.app.WatchTimingTest
+javac -encoding UTF-8 -d "$tmp" "$src/StorageReviewPolicy.java" "$base/tests/StorageReviewPolicyTest.java"
+java -cp "$tmp" dev.pagetrim.app.StorageReviewPolicyTest

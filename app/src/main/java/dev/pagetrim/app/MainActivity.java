@@ -95,8 +95,8 @@ public final class MainActivity extends Activity {
       if (sameProcess && config != null && WatchService.isLatestRequest(monitorRequest)) {
         pendingMonitor = new WatchConfig(
             config.getBoolean("threshold"), config.getInt("used"), config.getBoolean("interval"),
-            config.getInt("minutes"), config.getBoolean("root")
-                ? WatchService.Mode.ROOT_RECLAIM : WatchService.Mode.ALERT_ONLY, config.getBoolean("lowMemoryOnly"));
+            config.getInt("minutes"), WatchService.Mode.fromPreference(config.getString("mode")),
+            config.getBoolean("lowMemoryOnly"), config.getInt("localScopes"));
       }
     }
     draw();
@@ -194,7 +194,8 @@ public final class MainActivity extends Activity {
       config.putBoolean("interval", pendingMonitor.intervalEnabled);
       config.putInt("minutes", pendingMonitor.intervalMinutes);
       config.putBoolean("lowMemoryOnly", pendingMonitor.lowMemoryOnly);
-      config.putBoolean("root", pendingMonitor.mode == WatchService.Mode.ROOT_RECLAIM);
+      config.putString("mode", pendingMonitor.mode.name());
+      config.putInt("localScopes", pendingMonitor.localScopes);
       b.putBundle("pendingMonitor", config);
     }
   }
@@ -358,6 +359,12 @@ public final class MainActivity extends Activity {
     gap(body, 12);
     LinearLayout extras = card(R.color.leaf_surface);
     monitorNote = rowAction(extras, "自动监控", "", v -> openMonitor(null));
+    line(extras);
+    rowAction(extras, "免 Root 运存诊断", "查看低内存阈值、换页和内存压力，比较操作前后。", v -> MemoryInspection.show(this));
+    line(extras);
+    rowAction(extras, "应用使用与后台管理", "按近期使用记录筛选应用，管理选定应用的后台进程。", v -> startActivity(new Intent(this, AppReviewActivity.class)));
+    line(extras);
+    rowAction(extras, "文件页与应用协作 · 免 Root", "定向处理选中文件或由资源所属应用释放内存。", v -> startActivity(new Intent(this, ScopeActivity.class).putExtra(ScopeActivity.ROOTLESS, true)));
     add(body, extras);
     gap(body, 12);
     LinearLayout tools = card(R.color.leaf_surface);
@@ -535,6 +542,7 @@ public final class MainActivity extends Activity {
     String status;
     switch (WatchService.mode()) {
       case ALERT_ONLY: status = "仅提醒 · 运行中"; break;
+      case LOCAL_RECLAIM: status = "自动回收落叶自身 · 运行中"; break;
       case ROOT_RECLAIM: status = "自动回收文件页 · 运行中"; break;
       default: status = "已关闭 · 可设置占用阈值和定时间隔";
     }
@@ -567,6 +575,10 @@ public final class MainActivity extends Activity {
     gap(body, 12);
     LinearLayout c = card(R.color.leaf_surface);
     rowAction(c, "应用占用排行", "按缓存或总占用排序，点选应用查看系统存储设置。", v -> showRanking());
+    line(c);
+    rowAction(c, "授权目录清理", "查看所选本机目录，逐项选择过期的临时文件。", v -> startActivity(new Intent(this, StorageReviewActivity.class)));
+    line(c);
+    rowAction(c, "存储卷与空间管理", "查看各卷的容量和可用空间，打开系统空间管理。", v -> StorageVolumes.show(this));
     line(c);
     rowAction(c, "应用缓存", "直接选择应用，在系统存储页点“清除缓存”。", v -> chooseApp());
     line(c);

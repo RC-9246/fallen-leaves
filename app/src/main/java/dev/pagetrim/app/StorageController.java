@@ -1,6 +1,7 @@
 package dev.pagetrim.app;
 
 import android.app.Activity;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ApplicationInfo;
@@ -63,7 +64,7 @@ public final class StorageController {
     return a;
   }
 
-  public static void openSettings(Activity a, String pkg) {
+  static PackageInfo checkedPackage(Context a, String pkg) {
     try {
       PackageManager pm = a.getPackageManager();
       PackageInfo info =
@@ -75,14 +76,43 @@ public final class StorageController {
                   PackageManager.MATCH_DISABLED_COMPONENTS)
               .isEmpty();
       if (!publishesVpn && eligible(a, info, java.util.Collections.emptySet())) {
-        a.startActivity(
-            new Intent(
-                Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", pkg, null)));
-        return;
+        return info;
       }
     } catch (PackageManager.NameNotFoundException ignored) {
     }
     throw new IllegalStateException("应用状态已改变，请刷新列表。");
+  }
+
+  static Intent settingsIntent(Context context, String pkg) {
+    checkedPackage(context, pkg);
+    Intent details = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", pkg, null));
+    if (systemPage(context, details)) return details;
+    throw new IllegalStateException("此设备未提供可打开应用详情的系统设置页面。");
+  }
+
+  static boolean systemPage(Context context, Intent intent) {
+    PackageManager pm = context.getPackageManager();
+    int flags = PackageManager.MATCH_DEFAULT_ONLY | PackageManager.MATCH_SYSTEM_ONLY;
+    ResolveInfo defaultHandler = pm.resolveActivity(intent, flags);
+    ComponentName chosen = null;
+    for (ResolveInfo handler : pm.queryIntentActivities(intent, flags)) {
+      if (handler.activityInfo == null || !handler.activityInfo.exported) continue;
+      ComponentName candidate = new ComponentName(handler.activityInfo.packageName, handler.activityInfo.name);
+      if (chosen == null) chosen = candidate;
+      if (defaultHandler != null && defaultHandler.activityInfo != null
+          && candidate.getPackageName().equals(defaultHandler.activityInfo.packageName)
+          && candidate.getClassName().equals(defaultHandler.activityInfo.name)) {
+        chosen = candidate;
+        break;
+      }
+    }
+    if (chosen == null) return false;
+    intent.setComponent(chosen);
+    return true;
+  }
+
+  public static void openSettings(Activity a, String pkg) {
+    a.startActivity(settingsIntent(a, pkg));
   }
 
   private StorageController() {}

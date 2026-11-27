@@ -27,7 +27,14 @@ public final class WatchService extends Service {
   public enum Mode {
     OFF,
     ALERT_ONLY,
-    ROOT_RECLAIM
+    ROOT_RECLAIM,
+    LOCAL_RECLAIM;
+
+    static Mode fromPreference(String name) {
+      if (ROOT_RECLAIM.name().equals(name)) return ROOT_RECLAIM;
+      if (LOCAL_RECLAIM.name().equals(name)) return LOCAL_RECLAIM;
+      return ALERT_ONLY;
+    }
   }
 
   public static final String ACTION_CONFIGURE = "dev.pagetrim.app.watch.CONFIGURE";
@@ -113,6 +120,7 @@ public final class WatchService extends Service {
         .putExtra(EXTRA_THRESHOLD_ENABLED, config.thresholdEnabled)
         .putExtra(EXTRA_INTERVAL, config.intervalMinutes)
         .putExtra(EXTRA_INTERVAL_ENABLED, config.intervalEnabled)
+        .putExtra("local_scopes", config.localScopes)
         .putExtra(EXTRA_LOW_MEMORY_ONLY, config.lowMemoryOnly)
         .putExtra(EXTRA_MODE, config.mode.name());
     context.startForegroundService(request);
@@ -143,7 +151,8 @@ public final class WatchService extends Service {
     return new WatchConfig(
         session.getBoolean("threshold_enabled", false), session.getInt("used_percent", -1),
         session.getBoolean("interval_enabled", false), session.getInt("interval_minutes", -1),
-        Mode.valueOf(session.getString("action_mode", "")), session.getBoolean("low_memory_only", false));
+        Mode.valueOf(session.getString("action_mode", "")), session.getBoolean("low_memory_only", false),
+        session.getInt("local_scopes", 0));
   }
 
   private void finishSession(int startId) {
@@ -176,7 +185,8 @@ public final class WatchService extends Service {
         if (intent.hasExtra(EXTRA_USED)) {
           config = new WatchConfig(intent.getBooleanExtra(EXTRA_THRESHOLD_ENABLED, false),
               intent.getIntExtra(EXTRA_USED, -1), intent.getBooleanExtra(EXTRA_INTERVAL_ENABLED, false),
-              intent.getIntExtra(EXTRA_INTERVAL, -1), mode, intent.getBooleanExtra(EXTRA_LOW_MEMORY_ONLY, false));
+              intent.getIntExtra(EXTRA_INTERVAL, -1), mode, intent.getBooleanExtra(EXTRA_LOW_MEMORY_ONLY, false),
+              intent.getIntExtra("local_scopes", 0));
         } else {
           int threshold = intent.getIntExtra(EXTRA_THRESHOLD, -1);
           if (!validThreshold(threshold)) throw new IllegalArgumentException("阈值无效");
@@ -247,11 +257,15 @@ public final class WatchService extends Service {
     PendingIntent stopAction =
         PendingIntent.getService(
             this, 0, stop, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+    String operation = " · 仅提醒";
+    if (mode == Mode.LOCAL_RECLAIM) operation = " · 仅回收落叶自身运存";
+    if (mode == Mode.ROOT_RECLAIM) operation = config.lowMemoryOnly
+        ? " · 系统低内存时回收文件页" : " · 仅回收文件页缓存";
     Notification.Builder builder =
         new Notification.Builder(this, CHANNEL)
             .setSmallIcon(android.R.drawable.stat_notify_sync)
             .setContentTitle(getString(R.string.app_name) + " 正在监控可用内存")
-            .setContentText(summary(config) + (mode == Mode.ALERT_ONLY ? " · 仅提醒" : config.lowMemoryOnly ? " · 系统低内存时回收文件页" : " · 仅回收文件页缓存"))
+            .setContentText(summary(config) + operation)
             .setContentIntent(openApp(false))
             .setOngoing(true)
             .setOnlyAlertOnce(true)
@@ -337,10 +351,11 @@ public final class WatchService extends Service {
           Log.w(TAG, "Memory counters unavailable", error);
         }
       }
-      boolean guarded = config.lowMemoryOnly && config.mode == Mode.ROOT_RECLAIM;
+      boolean guarded = config.lowMemoryOnly && config.mode != Mode.ALERT_ONLY;
       boolean checkDue = timing.intervalDue(now) || (config.thresholdEnabled && timing.sampleDue(now));
       boolean pressureAllows = !guarded || !checkDue || systemLowMemory();
-      String key = config.mode == Mode.ALERT_ONLY ? LAST_ALERT : LAST_ATTEMPT;
+      String key = config.mode == Mode.LOCAL_RECLAIM ? "last_local_attempt_elapsed_ms"
+          : config.mode == Mode.ALERT_ONLY ? LAST_ALERT : LAST_ATTEMPT;
       boolean wasArmed = timing.isArmed();
       int reasons;
       synchronized (ATTEMPT_LOCK) {
@@ -378,6 +393,18 @@ public final class WatchService extends Service {
       if (config.mode == Mode.ALERT_ONLY) {
         boolean low = (reasons & WatchTiming.THRESHOLD) != 0;
         main.post(() -> postAlert(low, detail));
+        return;
+      }
+      if (config.mode == Mode.LOCAL_RECLAIM) {
+        synchronized (RamController.class) {
+          if (inactive()) return;
+          if (guarded && (!pressureAllows || !systemLowMemory())) {
+            History.add(WatchService.this, "自身回收已跳过", detail + "。系统未报告低内存。");
+            return;
+          }
+          String report = LocalMemory.run(config.localScopes, this::inactive);
+          History.add(WatchService.this, "落叶自身回收", detail + "。\n" + report);
+        }
         return;
       }
       if (!LegacyScope.enabled(WatchService.this, LegacyScope.Scope.FILES)) {

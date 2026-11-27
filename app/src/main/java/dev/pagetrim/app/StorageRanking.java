@@ -13,7 +13,6 @@ import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Process;
-import android.os.UserHandle;
 import android.os.storage.StorageManager;
 import android.provider.Settings;
 import java.io.IOException;
@@ -60,33 +59,41 @@ public final class StorageRanking {
       Intent detail = new Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS,
           Uri.fromParts("package", activity.getPackageName(), null));
       try {
-        activity.startActivity(detail);
-        return;
+        if (StorageController.systemPage(activity, detail)) {
+          activity.startActivity(detail);
+          return;
+        }
       } catch (ActivityNotFoundException | SecurityException ignored) {
         // Some manufacturers only expose the list of apps.
       }
     }
     try {
-      activity.startActivity(new Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS));
+      Intent list = new Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS);
+      if (!StorageController.systemPage(activity, list))
+        throw new IllegalStateException("此设备未提供使用情况访问权限设置。");
+      activity.startActivity(list);
     } catch (ActivityNotFoundException | SecurityException e) {
       throw new IllegalStateException("请在系统设置中打开「使用情况访问权限」。", e);
     }
   }
 
+  static StorageStats readStats(Context ctx, String pkg) throws IOException, PackageManager.NameNotFoundException {
+    StorageStatsManager service = ctx.getSystemService(StorageStatsManager.class);
+    if (service == null) throw new IOException("系统未提供存储统计");
+    ApplicationInfo info = ctx.getPackageManager().getApplicationInfo(pkg, 0);
+    UUID volume = info.storageUuid != null ? info.storageUuid : StorageManager.UUID_DEFAULT;
+    return service.queryStatsForPackage(volume, pkg, Process.myUserHandle());
+  }
+
   /** Call on a worker thread. Figures describe each app on its installation volume. */
   public static List<Entry> list(Context ctx) {
-    StorageStatsManager service = ctx.getSystemService(StorageStatsManager.class);
-    PackageManager pm = ctx.getPackageManager();
-    UserHandle user = Process.myUserHandle();
-    boolean allowed = service != null && hasUsageAccess(ctx);
+    boolean allowed = hasUsageAccess(ctx);
     List<Entry> result = new ArrayList<>();
     for (StorageController.Entry app : StorageController.list(ctx)) {
       StorageStats stats = null;
       if (allowed) {
         try {
-          ApplicationInfo info = pm.getApplicationInfo(app.pkg, 0);
-          UUID volume = info.storageUuid != null ? info.storageUuid : StorageManager.UUID_DEFAULT;
-          stats = service.queryStatsForPackage(volume, app.pkg, user);
+          stats = readStats(ctx, app.pkg);
         } catch (IOException | PackageManager.NameNotFoundException | SecurityException ignored) {
           // Access can change or an app's volume can disappear during a scan.
         }

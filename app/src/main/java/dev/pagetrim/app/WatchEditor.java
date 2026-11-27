@@ -3,10 +3,18 @@ package dev.pagetrim.app;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Context;
+import android.content.Intent;
+import android.content.ActivityNotFoundException;
+import android.net.Uri;
+import android.os.PowerManager;
+import android.provider.Settings;
 import android.os.Bundle;
+import android.os.Build;
 import android.text.InputType;
 import android.view.View;
 import android.widget.EditText;
+import android.widget.CheckBox;
+import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.RadioButton;
 import android.widget.RadioGroup;
@@ -67,7 +75,8 @@ public final class WatchEditor {
 
   private static final class Form extends LinearLayout {
     final Trigger threshold, interval;
-    final RadioButton reminder, reclaim;
+    final RadioButton reminder, reclaim, local;
+    final CheckBox gc, sqlite, allocator;
     final Switch lowMemoryOnly;
     final TextView error;
 
@@ -98,22 +107,61 @@ public final class WatchEditor {
       reclaim = new RadioButton(activity);
       reclaim.setId(View.generateViewId());
       reclaim.setText("用 Root 自动回收干净的文件页缓存");
+      local = new RadioButton(activity);
+      local.setId(View.generateViewId());
+      local.setText("免 Root，只回收落叶自身运存");
       group.addView(reminder);
+      group.addView(local);
       group.addView(reclaim);
       addView(group);
-      boolean withRoot = draft == null ? saved.mode == WatchService.Mode.ROOT_RECLAIM : draft.getBoolean("root");
-      group.check(withRoot ? reclaim.getId() : reminder.getId());
+      WatchService.Mode mode = draft == null ? saved.mode
+          : WatchService.Mode.fromPreference(draft.getString("mode"));
+      group.check(mode == WatchService.Mode.ROOT_RECLAIM ? reclaim.getId()
+          : mode == WatchService.Mode.LOCAL_RECLAIM ? local.getId() : reminder.getId());
+      LinearLayout localOptions = new LinearLayout(activity);
+      localOptions.setOrientation(VERTICAL);
+      localOptions.setPadding(pad, 0, 0, 0);
+      int scopes = draft == null ? saved.localScopes : draft.getInt("localScopes");
+      gc = option(localOptions, "请求落叶的 Java 堆垃圾回收", scopes, LocalMemory.GC);
+      sqlite = option(localOptions, "释放落叶的 SQLite 内存缓存", scopes, LocalMemory.SQLITE);
+      allocator = option(localOptions, "归还落叶原生分配器的空闲页（Android 9 起）", scopes, LocalMemory.NATIVE);
+      allocator.setEnabled(Build.VERSION.SDK_INT >= 28);
+      addView(localOptions);
+      localOptions.setVisibility(local.isChecked() ? VISIBLE : GONE);
       lowMemoryOnly = new Switch(activity);
       lowMemoryOnly.setText("仅在 Android 报告低内存时自动回收");
       lowMemoryOnly.setChecked(draft == null ? saved.lowMemoryOnly : draft.getBoolean("lowMemoryOnly"));
-      lowMemoryOnly.setEnabled(withRoot);
+      lowMemoryOnly.setEnabled(!reminder.isChecked());
       addView(lowMemoryOnly);
-      group.setOnCheckedChangeListener((buttons, selected) -> lowMemoryOnly.setEnabled(selected == reclaim.getId()));
+      group.setOnCheckedChangeListener((buttons, selected) -> {
+        lowMemoryOnly.setEnabled(selected != reminder.getId());
+        localOptions.setVisibility(selected == local.getId() ? VISIBLE : GONE);
+      });
       TextView background = new TextView(activity);
       background.setPadding(0, pad / 2, 0, 0);
       background.setText("监控开启后会显示常驻通知。切到其他应用、锁屏或划走落叶时，监控可继续，休眠可能推迟检查。"
           + "系统回收进程后可尝试恢复监控。手动停止或手机重启后，需要重新开启。");
       addView(background);
+      Button battery = new Button(activity) {
+        @Override public void onWindowFocusChanged(boolean focused) {
+          super.onWindowFocusChanged(focused);
+          if (focused) setText(batteryLabel(activity));
+        }
+      };
+      battery.setText(batteryLabel(activity));
+      battery.setOnClickListener(v -> {
+        try {
+          activity.startActivity(new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS));
+        } catch (ActivityNotFoundException | SecurityException unavailable) {
+          try {
+            activity.startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                Uri.fromParts("package", activity.getPackageName(), null)));
+          } catch (ActivityNotFoundException | SecurityException missing) {
+            showError("请在系统设置的电池优化列表中查找落叶。");
+          }
+        }
+      });
+      addView(battery);
       error = new TextView(activity);
       error.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
       error.setVisibility(GONE);
@@ -123,6 +171,31 @@ public final class WatchEditor {
         interval.value.setError(draft.getString("minutesError"));
         if (draft.containsKey("feedback")) showError(draft.getString("feedback"));
       }
+    }
+
+    private String batteryLabel(Activity activity) {
+      PowerManager power = activity.getSystemService(PowerManager.class);
+      if (power == null) return "查看系统电池优化";
+      return power.isIgnoringBatteryOptimizations(activity.getPackageName())
+          ? "系统电池优化：已豁免" : "系统电池优化：查看后台限制";
+    }
+
+    private CheckBox option(LinearLayout parent, String title, int mask, int bit) {
+      CheckBox check = new CheckBox(getContext());
+      check.setText(title);
+      check.setChecked((mask & bit) != 0);
+      parent.addView(check);
+      return check;
+    }
+
+    int scopes() {
+      return (gc.isChecked() ? LocalMemory.GC : 0) | (sqlite.isChecked() ? LocalMemory.SQLITE : 0)
+          | (allocator.isEnabled() && allocator.isChecked() ? LocalMemory.NATIVE : 0);
+    }
+
+    WatchService.Mode mode() {
+      if (local.isChecked()) return WatchService.Mode.LOCAL_RECLAIM;
+      return reclaim.isChecked() ? WatchService.Mode.ROOT_RECLAIM : WatchService.Mode.ALERT_ONLY;
     }
 
     void updateButton(AlertDialog dialog) {
@@ -143,7 +216,8 @@ public final class WatchEditor {
       state.putString("percent", threshold.value.getText().toString());
       state.putBoolean("interval", interval.enabled.isChecked());
       state.putString("minutes", interval.value.getText().toString());
-      state.putBoolean("root", reclaim.isChecked());
+      state.putString("mode", mode().name());
+      state.putInt("localScopes", scopes());
       state.putBoolean("lowMemoryOnly", lowMemoryOnly.isChecked());
       if (threshold.value.getError() != null)
         state.putString("percentError", threshold.value.getError().toString());
@@ -190,11 +264,10 @@ public final class WatchEditor {
           (percent < 0 ? form.threshold.value : form.interval.value).requestFocus();
           return;
         }
-        WatchService.Mode mode = form.reclaim.isChecked() ? WatchService.Mode.ROOT_RECLAIM
-            : WatchService.Mode.ALERT_ONLY;
+        WatchService.Mode mode = form.mode();
         try {
           callback.onSave(new WatchConfig(form.threshold.enabled.isChecked(), percent,
-              form.interval.enabled.isChecked(), minutes, mode, form.lowMemoryOnly.isChecked()));
+              form.interval.enabled.isChecked(), minutes, mode, form.lowMemoryOnly.isChecked(), form.scopes()));
           dialog.dismiss();
         } catch (IllegalArgumentException | IllegalStateException e) {
           form.showError(e.getMessage() == null ? "无法保存监控设置。" : e.getMessage());

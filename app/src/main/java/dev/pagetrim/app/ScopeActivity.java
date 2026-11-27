@@ -16,7 +16,10 @@ import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
@@ -25,8 +28,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 /** All advanced scopes are manual, opt-in and kept separate from the service and tile. */
 public final class ScopeActivity extends Activity {
+  static final String ROOTLESS = "rootless";
+  private static final int MAX_DOCUMENTS = 32;
+
   private enum Group {
-    FILE("文件缓存", "选择一个本地文件，保留文件内容。"),
+    FILE("文件缓存", "查看或建议逐出最多 32 个本机文档的缓存。单独写回一次选择一个文档。"),
     TARGET("缓存应用", "需要 Root。选择应用、映射和本次预算。"),
     KERNEL("内核与驱动", "需要 Root。逐项读取本机能力，再决定是否执行。"),
     COOP("应用协作", "无需 Root。进入资源所有者的协作界面，由它管理自己的分配器、缓存和页面。"),
@@ -141,6 +147,7 @@ public final class ScopeActivity extends Activity {
   private Feature pending;
   private String nonce, pkg, signer;
   private boolean working;
+  private boolean rootless;
   private int scrollY;
 
   @Override
@@ -152,6 +159,7 @@ public final class ScopeActivity extends Activity {
   @Override
   protected void onCreate(Bundle b) {
     super.onCreate(b);
+    rootless = getIntent().getBooleanExtra(ROOTLESS, false);
     prefs = getSharedPreferences("advanced_scopes_v1", MODE_PRIVATE);
     if (b != null) {
       String g = b.getString("group"), f = b.getString("pending");
@@ -215,13 +223,14 @@ public final class ScopeActivity extends Activity {
     scroll.addView(body);
     setContentView(scroll);
     body.addView(button(group == null ? "返回运存" : "返回功能分类", v -> onBackPressed()));
-    body.addView(text(group == null ? "高级回收与设备复核" : group.title, 24, true));
+    body.addView(text(group == null ? (rootless ? "文件页与应用协作 · 免 Root" : "高级回收与设备复核") : group.title, 24, true));
     progress = text("", 14, false);
     body.addView(progress);
     if (group != null) body.addView(text(group.note, 15, false));
     if (group == null) {
       body.addView(text("所有新增开关默认关闭。打开后仍需手动选择并执行。", 15, false));
       for (Group g : Group.values()) {
+        if (rootless && g != Group.FILE && g != Group.COOP) continue;
         Button b =
             button(
                 g.title,
@@ -238,7 +247,7 @@ public final class ScopeActivity extends Activity {
         body.addView(button("恢复待机分组", v -> restore(false)));
         body.addView(button("解除应用挂起", v -> restore(true)));
       }
-      for (Feature f : Feature.values()) if (f.group == group) row(f);
+      for (Feature f : Feature.values()) if (f.group == group && !(rootless && f == Feature.ROOT_FILE)) row(f);
     }
     final int y = scrollY;
     scroll.post(() -> scroll.scrollTo(0, y));
@@ -374,7 +383,8 @@ public final class ScopeActivity extends Activity {
       try {
         pending = f;
         startActivityForResult(
-            f == Feature.SYNC ? FilesScope.syncIntent() : FilesScope.pickIntent(), DOCUMENT);
+            f == Feature.SYNC ? FilesScope.syncIntent()
+                : FilesScope.pickIntent().putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true), DOCUMENT);
       } catch (RuntimeException ex) {
         pending = null;
         message(f.title, "系统文件选择器不可用。");
@@ -703,6 +713,28 @@ public final class ScopeActivity extends Activity {
         });
   }
 
+  private String runDocuments(Feature f, List<Uri> files) throws IOException {
+    if (f == Feature.SYNC) return FilesScope.runSync(this, files.get(0));
+    if (files.size() == 1) return FilesScope.run(this, files.get(0), f == Feature.EVICT);
+    int completed = 0;
+    StringBuilder details = new StringBuilder();
+    for (Uri uri : files) {
+      if (!enabled(f)) {
+        details.append("\n范围已关闭，剩余文件已跳过。");
+        break;
+      }
+      try {
+        details.append("\n\n").append(FilesScope.run(this, uri, f == Feature.EVICT));
+        completed++;
+      } catch (IOException | RuntimeException failure) {
+        details.append("\n未完成：").append(failure.getMessage());
+      }
+    }
+    String result = "已处理 " + completed + " / " + files.size() + " 个文件。" + details;
+    if (completed < files.size()) throw new IOException(result);
+    return result;
+  }
+
   private void clearPending() {
     pending = null;
     nonce = null;
@@ -719,18 +751,24 @@ public final class ScopeActivity extends Activity {
     clearPending();
     if (result != RESULT_OK || f == null || !enabled(f) || data == null) return;
     if (code == DOCUMENT && f.group == Group.FILE) {
-      Uri u = data.getData();
-      if (u == null) return;
-      Runnable run =
-          () ->
-              record(
-                  f,
-                  () ->
-                      f == Feature.SYNC
-                          ? FilesScope.runSync(this, u)
-                          : FilesScope.run(this, u, f == Feature.EVICT));
+      Set<Uri> selection = new LinkedHashSet<>();
+      if (data.getData() != null) selection.add(data.getData());
+      android.content.ClipData clips = data.getClipData();
+      if (clips != null) {
+        for (int i = 0; i < clips.getItemCount() && selection.size() <= MAX_DOCUMENTS; i++) {
+          Uri uri = clips.getItemAt(i).getUri();
+          if (uri != null) selection.add(uri);
+        }
+      }
+      if (selection.isEmpty()) return;
+      if (selection.size() > MAX_DOCUMENTS || (f == Feature.SYNC && selection.size() != 1)) {
+        message(f.title, f == Feature.SYNC ? "写回一次请选择一个文件。" : "一次最多选择 32 个文件，请重新选择。");
+        return;
+      }
+      List<Uri> files = new ArrayList<>(selection);
+      Runnable run = () -> record(f, () -> runDocuments(f, files));
       if (f == Feature.INSPECT) run.run();
-      else confirm(f, "系统文件选择器中的选定文件", run);
+      else confirm(f, "系统文件选择器中选定的 " + files.size() + " 个文件", run);
     } else if (code == OWNER && f.coop != null && owner != null && id != null) {
       record(
           f,
